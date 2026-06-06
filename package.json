@@ -1,0 +1,19 @@
+{
+  "name": "hypecast",
+  "version": "1.0.0",
+  "description": "HypeCast: a React and Node.js live music prep experience.",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js",
+    "check": "node --check server/index.js && node --check server/hypecastEngine.js && node --check server/serviceAdapters.js"
+  },
+  "keywords": [
+    "react",
+    "nodejs",
+    "music",
+    "hackathon"
+  ],
+  "author": "",
+  "license": "MIT"
+}
