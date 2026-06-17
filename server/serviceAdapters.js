@@ -539,7 +539,7 @@ function getArtistProfile(artist) {
  * Simulates a JamBase API call to fetch the next upcoming concert.
  * When JAMBASE_API_KEY is set, a real HTTP call would happen here.
  */
-async function fetchUpcomingConcert({ artist, city }) {
+function buildDemoConcert({ artist, city }) {
   const seed    = getSeed([artist, city, "show"]);
   const cityKey = normalizeKey(city);
   const venues  = CITY_VENUES[cityKey] || ["Civic Music Hall", "Riverside Amphitheater", "Downtown Arena"];
@@ -550,20 +550,74 @@ async function fetchUpcomingConcert({ artist, city }) {
   showDate.setHours(20, 0, 0, 0);
 
   const doorsHour  = 18 + (seed % 3);   // 18:00, 19:00, or 20:00
-  const doorsLabel = `${doorsHour}:00`;
 
   return {
     source:     process.env.JAMBASE_API_KEY
-                  ? "JamBase API configured; demo seed data active"
+                  ? "JamBase reachable; demo seed data active"
                   : "JamBase demo fallback",
     status:     process.env.JAMBASE_API_KEY ? "configured" : "demo",
     artist,
     city,
     venue:      pick(venues, seed),
     dateISO:    showDate.toISOString(),
-    doors:      doorsLabel,
+    doors:      `${doorsHour}:00`,
     confidence: parseFloat((0.72 + (seed % 22) / 100).toFixed(2))
   };
+}
+
+/**
+ * Fetches the next upcoming concert for an artist from the JamBase Data API.
+ * Falls back to deterministic demo data when no key is set or no event is found.
+ */
+async function fetchUpcomingConcert({ artist, city }) {
+  if (!process.env.JAMBASE_API_KEY) return buildDemoConcert({ artist, city });
+
+  try {
+    const params = new URLSearchParams({
+      artistName: artist,
+      apikey:     process.env.JAMBASE_API_KEY
+    });
+    if (city) params.set("geoCityName", city);
+
+    const data   = await requestJson(`https://www.jambase.com/jb-api/v1/events?${params.toString()}`);
+    const events = (data && (data.events || data.data)) || [];
+
+    // Choose the soonest event that is still in the future
+    const now    = Date.now();
+    const upcoming = events
+      .map((e) => {
+        const venue =
+          (e.location && (e.location.name || (e.location.address && e.location.address.name))) ||
+          (e._embedded && e._embedded.venue && e._embedded.venue.name) ||
+          e.venueName || "Venue TBA";
+        const dateISO = e.startDate || e.date || e.eventDate;
+        return dateISO ? { dateISO: new Date(dateISO).toISOString(), venue } : null;
+      })
+      .filter((e) => e && new Date(e.dateISO).getTime() > now)
+      .sort((a, b) => new Date(a.dateISO) - new Date(b.dateISO));
+
+    if (!upcoming.length) {
+      const demo = buildDemoConcert({ artist, city });
+      demo.source = "JamBase: no upcoming event found; demo data active";
+      return demo;
+    }
+
+    const next = upcoming[0];
+    return {
+      source:     "JamBase live event data",
+      status:     "live",
+      artist,
+      city,
+      venue:      next.venue,
+      dateISO:    next.dateISO,
+      doors:      "Doors TBA",
+      confidence: 1
+    };
+  } catch (e) {
+    const demo = buildDemoConcert({ artist, city });
+    demo.source = `JamBase error (${e.message}); demo data active`;
+    return demo;
+  }
 }
 
 /* ─────────────────────────────────────────────────────────
@@ -604,12 +658,236 @@ function httpGetJson(url) {
 }
 
 /**
+ * Generic JSON GET that supports custom request headers (needed for
+ * authenticated APIs such as Songstats). Follows a single redirect.
+ */
+function requestJson(url, { headers = {}, timeout = 8000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith("https") ? https : http;
+    const req = lib.get(url, { headers, timeout }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        requestJson(res.headers.location, { headers, timeout }).then(resolve, reject);
+        return;
+      }
+      let raw = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => { raw += chunk; });
+      res.on("end", () => {
+        if (res.statusCode !== 200) {
+          reject(new Error(`HTTP ${res.statusCode}: ${raw.slice(0, 180)}`));
+          return;
+        }
+        try { resolve(JSON.parse(raw)); }
+        catch (e) { reject(new Error("Invalid JSON")); }
+      });
+    });
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(); reject(new Error("Timeout")); });
+  });
+}
+
+/**
+ * JSON POST that resolves to a binary Buffer (used for ElevenLabs audio).
+ * Returns { buffer, contentType }.
+ */
+function postForBuffer(url, { headers = {}, body, timeout = 30000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const u       = new URL(url);
+    const lib     = u.protocol === "https:" ? https : http;
+    const payload = typeof body === "string" ? body : JSON.stringify(body || {});
+    const req = lib.request({
+      hostname: u.hostname,
+      path:     u.pathname + u.search,
+      method:   "POST",
+      headers: {
+        "Content-Type":   "application/json",
+        "Content-Length": Buffer.byteLength(payload),
+        ...headers
+      },
+      timeout
+    }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        const buf = Buffer.concat(chunks);
+        if (res.statusCode !== 200) {
+          reject(new Error(`HTTP ${res.statusCode}: ${buf.toString("utf8").slice(0, 180)}`));
+          return;
+        }
+        resolve({ buffer: buf, contentType: res.headers["content-type"] || "audio/mpeg" });
+      });
+    });
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(); reject(new Error("Timeout")); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+/* ─────────────────────────────────────────────────────────
+   SONGSTATS  (real artist analytics → current top tracks)
+   Docs: https://docs.songstats.com  ·  apikey header auth
+───────────────────────────────────────────────────────── */
+const SONGSTATS_BASE = "https://api.songstats.com/enterprise/v1";
+
+function songstatsHeaders() {
+  return { apikey: process.env.SONGSTATS_API_KEY || "", Accept: "application/json" };
+}
+
+/**
+ * Walk an arbitrary JSON object and return the first array whose items
+ * satisfy `predicate`. Songstats response envelopes are loosely typed,
+ * so this keeps parsing resilient to shape changes.
+ */
+function findArray(obj, predicate) {
+  const seen  = new Set();
+  const stack = [obj];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (!cur || typeof cur !== "object" || seen.has(cur)) continue;
+    seen.add(cur);
+    if (Array.isArray(cur)) {
+      const hits = cur.filter(predicate);
+      if (hits.length) return hits;
+    }
+    for (const v of Object.values(cur)) {
+      if (v && typeof v === "object") stack.push(v);
+    }
+  }
+  return null;
+}
+
+function pickStat(obj, names) {
+  if (!obj || typeof obj !== "object") return null;
+  for (const n of names) {
+    if (obj[n] != null && !Number.isNaN(Number(obj[n]))) return Number(obj[n]);
+  }
+  // dive one level into a nested stats container
+  for (const v of Object.values(obj)) {
+    if (v && typeof v === "object") {
+      const found = pickStat(v, names);
+      if (found != null) return found;
+    }
+  }
+  return null;
+}
+
+async function songstatsFindArtist(artist) {
+  const url  = `${SONGSTATS_BASE}/artists/search?q=${encodeURIComponent(artist)}`;
+  const data = await requestJson(url, { headers: songstatsHeaders() });
+  const arr  = findArray(data, (x) =>
+    x && typeof x === "object" && (x.songstats_artist_id || x.name)
+  );
+  if (!arr || !arr.length) return null;
+
+  const norm = normalizeKey(artist);
+  const best =
+    arr.find((a) => normalizeKey(a.name) === norm) ||
+    arr.find((a) => normalizeKey(a.name).includes(norm)) ||
+    arr[0];
+
+  if (!best) return null;
+  return {
+    id:       best.songstats_artist_id || best.id || null,
+    name:     best.name || artist,
+    imageUrl: best.avatar || best.image_url || null,
+    genres:   Array.isArray(best.genres) ? best.genres : []
+  };
+}
+
+/**
+ * Fetches an artist's current top tracks from Songstats.
+ * Returns { status, source, artistName, imageUrl, genres, topTracks[] }.
+ * Always resolves — degrades to a demo/empty payload on any failure so
+ * the caller can fall back to the curated profile.
+ */
+async function fetchSongstatsTopTracks({ artist }) {
+  if (!process.env.SONGSTATS_API_KEY) {
+    return { status: "demo", source: "Songstats demo fallback", topTracks: [] };
+  }
+  try {
+    const found = await songstatsFindArtist(artist);
+    if (!found || !found.id) {
+      return { status: "configured", source: "Songstats: no artist match", topTracks: [], artistName: artist };
+    }
+
+    const url  = `${SONGSTATS_BASE}/artists/top_tracks?songstats_artist_id=${encodeURIComponent(found.id)}&source=spotify`;
+    const data = await requestJson(url, { headers: songstatsHeaders() });
+    const arr  = findArray(data, (x) =>
+      x && typeof x === "object" && (x.title || x.track_title || x.name)
+    ) || [];
+
+    const topTracks = arr.slice(0, 8).map((t, i) => ({
+      title:         t.title || t.track_title || t.name,
+      isrc:          t.isrc || null,
+      rank:          i + 1,
+      streams:       pickStat(t, ["streams_total", "streams", "spotify_streams_total", "value"]),
+      chartPosition: pickStat(t, ["chart_position", "charts_current", "rank"])
+    })).filter((t) => t.title);
+
+    return {
+      status:            topTracks.length ? "live" : "configured",
+      source:            topTracks.length ? "Songstats live top tracks" : "Songstats: no track data",
+      artistName:        found.name || artist,
+      imageUrl:          found.imageUrl,
+      genres:            found.genres,
+      songstatsArtistId: found.id,
+      topTracks
+    };
+  } catch (e) {
+    return { status: "error", source: `Songstats error: ${e.message}`, topTracks: [] };
+  }
+}
+
+/* ─────────────────────────────────────────────────────────
+   MUSIXMATCH  (real lyrics via matcher.lyrics.get)
+   Docs: https://api.musixmatch.com/ws/1.1  ·  apikey query param
+───────────────────────────────────────────────────────── */
+
+/**
+ * Fetch lyrics for a title+artist directly from Musixmatch.
+ * Returns { text, source, copyright } or null when unavailable/unconfigured.
+ * The free tier returns a 30% preview plus a non-commercial disclaimer,
+ * which is stripped for display while the copyright notice is preserved.
+ */
+async function fetchMusixmatchLyrics(artist, title) {
+  if (!process.env.MUSIXMATCH_API_KEY) return null;
+
+  const url =
+    `https://api.musixmatch.com/ws/1.1/matcher.lyrics.get?format=json` +
+    `&q_track=${encodeURIComponent(title)}` +
+    `&q_artist=${encodeURIComponent(artist)}` +
+    `&apikey=${encodeURIComponent(process.env.MUSIXMATCH_API_KEY)}`;
+
+  const data   = await requestJson(url);
+  const status = data && data.message && data.message.header && data.message.header.status_code;
+  if (status !== 200) return null;
+
+  const lyr = data.message.body && data.message.body.lyrics;
+  if (!lyr || !lyr.lyrics_body) return null;
+
+  const body = String(lyr.lyrics_body)
+    .replace(/\*{3,}[\s\S]*?\*{3,}/g, "")  // strip "*** NOT for Commercial use ***"
+    .replace(/^\s*\(\d+%\)\s*$/gm, "")      // strip stray "(30%)" markers
+    .trim();
+
+  if (body.length < 20) return null;
+  return { text: body, source: "Musixmatch", copyright: lyr.lyrics_copyright || null };
+}
+
+/**
  * Try lyrics.ovh first, then lrclib.net as fallback.
  * Returns { text, source } or { text: null, source: "unavailable" }.
  */
 async function fetchRawLyrics(artist, title) {
   const encArtist = encodeURIComponent(artist);
   const encTitle  = encodeURIComponent(title);
+
+  // ── Strategy 0: Musixmatch (when configured) ───────
+  try {
+    const mm = await fetchMusixmatchLyrics(artist, title);
+    if (mm) return mm;
+  } catch (_) { /* fall through */ }
 
   // ── Strategy 1: lyrics.ovh ─────────────────────────
   try {
@@ -776,6 +1054,7 @@ async function fetchLyricsInsights({ artist, tracks }) {
       fullLyrics,
       chorus,
       lyricsSource,
+      lyricsCopyright: rawLyrics.copyright || null,
       // iTunes preview — the real artist's voice
       preview: preview ? {
         url:        preview.previewUrl,
@@ -828,29 +1107,52 @@ async function extractInstrumentalHooks({ tracks }) {
   };
 }
 
+// Default ElevenLabs voice ("Adam") used when ELEVENLABS_VOICE_ID is unset.
+const DEFAULT_ELEVENLABS_VOICE = "pNInz6obpgDQGcFmaJgB";
+
 /**
- * Simulates an ElevenLabs TTS call.
- * Returns voice metadata; actual audio is generated client-side via
- * the Web Speech API as a demo fallback.
+ * Reports ElevenLabs narration availability. Real audio is synthesized
+ * on demand via the /api/narration endpoint; the browser Web Speech API
+ * is used as the fallback when no key is configured.
  */
 async function prepareVoiceNarration({ script }) {
-  const configured = Boolean(
-    process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_VOICE_ID
-  );
+  const live = Boolean(process.env.ELEVENLABS_API_KEY);
   return {
-    source: configured
-              ? "ElevenLabs API configured; browser narration active"
+    source: live
+              ? "ElevenLabs live narration available"
               : "ElevenLabs demo fallback (browser SpeechSynthesis)",
-    status: configured ? "configured" : "demo",
-    voice:  configured ? process.env.ELEVENLABS_VOICE_ID : "Browser DJ",
+    status: live ? "live" : "demo",
+    available: live,
+    voice:  process.env.ELEVENLABS_VOICE_ID || (live ? DEFAULT_ELEVENLABS_VOICE : "Browser DJ"),
     estimatedWords: script.split(/\s+/).filter(Boolean).length
   };
+}
+
+/**
+ * Synthesizes narration audio with ElevenLabs text-to-speech.
+ * Resolves to { buffer, contentType } or null when no key is configured.
+ */
+async function synthesizeNarration({ script, voiceId }) {
+  if (!process.env.ELEVENLABS_API_KEY) return null;
+  const voice = voiceId || process.env.ELEVENLABS_VOICE_ID || DEFAULT_ELEVENLABS_VOICE;
+  const url   = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voice)}`;
+  return postForBuffer(url, {
+    headers: { "xi-api-key": process.env.ELEVENLABS_API_KEY, Accept: "audio/mpeg" },
+    body: {
+      text:     script,
+      model_id: "eleven_multilingual_v2",
+      voice_settings: { stability: 0.4, similarity_boost: 0.75, style: 0.5, use_speaker_boost: true }
+    },
+    timeout: 60000
+  });
 }
 
 module.exports = {
   getArtistProfile,
   fetchUpcomingConcert,
   fetchLyricsInsights,
+  fetchSongstatsTopTracks,
   extractInstrumentalHooks,
-  prepareVoiceNarration
+  prepareVoiceNarration,
+  synthesizeNarration
 };

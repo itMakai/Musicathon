@@ -2,6 +2,7 @@ const http = require("node:http");
 const path = require("node:path");
 const { promises: fs } = require("node:fs");
 const { buildHypecast } = require("./hypecastEngine");
+const { synthesizeNarration } = require("./serviceAdapters");
 
 const HOST = "0.0.0.0";
 const START_PORT = Number.parseInt(process.env.PORT || "5000", 10);
@@ -107,6 +108,31 @@ async function handleRequest(request, response) {
       sendJson(response, 400, {
         error: error.message || "Unable to generate HypeCast."
       });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/narration") {
+    try {
+      const body = await readRequestBody(request);
+      const script = String(body.script || "").trim();
+      if (!script) {
+        sendJson(response, 400, { error: "A script is required." });
+        return;
+      }
+      const result = await synthesizeNarration({ script, voiceId: body.voiceId });
+      if (!result) {
+        sendJson(response, 503, { error: "ElevenLabs narration is not configured." });
+        return;
+      }
+      response.writeHead(200, {
+        "Content-Type": result.contentType || "audio/mpeg",
+        "Content-Length": result.buffer.length,
+        "Cache-Control": "no-store"
+      });
+      response.end(result.buffer);
+    } catch (error) {
+      sendJson(response, 502, { error: error.message || "Narration synthesis failed." });
     }
     return;
   }

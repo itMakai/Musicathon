@@ -2,9 +2,33 @@ const {
   extractInstrumentalHooks,
   fetchLyricsInsights,
   fetchUpcomingConcert,
+  fetchSongstatsTopTracks,
   getArtistProfile,
   prepareVoiceNarration
 } = require("./serviceAdapters");
+
+/* Generic setlist scaffolding used when Songstats supplies real top tracks
+   for an artist that has no curated profile. */
+const GENERIC_THEMES = ["arrival", "devotion", "momentum", "tension and release", "closure"];
+const GENERIC_CUES = [
+  "catch the first repeated phrase and answer it with the room",
+  "stretch the long notes and leave space after the downbeat",
+  "lock onto the hook and ride it with the crowd",
+  "hold back until the drop, then lift with everything you have",
+  "sing the final refrain cleanly and let the band carry the outro"
+];
+
+function normalizeTitle(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function formatStreams(n) {
+  if (!n) return null;
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(0)}K`;
+  return String(n);
+}
 
 /* ─────────────────────────────────────────────────────────
    VIBE COPY BANK
@@ -197,13 +221,50 @@ async function buildHypecast(payload) {
   const vibeKey = VIBE_COPY[payload.vibe] ? payload.vibe : "radio-dj";
   const vibe    = VIBE_COPY[vibeKey];
 
-  // Parallel data fetching
-  const profile = getArtistProfile(artist);
-  const tracks  = profile.tracks.map((track, index) => ({
+  const profile      = getArtistProfile(artist);
+  const isKnownArtist = profile.match.length > 0;
+
+  // Songstats supplies the artist's REAL current top tracks.
+  const songstats  = await fetchSongstatsTopTracks({ artist });
+  const liveTracks = songstats.topTracks || [];
+
+  // For artists without a curated profile, build the setlist from the real
+  // Songstats top tracks; otherwise keep the curated, richly-annotated set.
+  let baseTracks;
+  if (!isKnownArtist && liveTracks.length >= 3) {
+    baseTracks = liveTracks.slice(0, 5).map((t, index) => ({
+      title:     t.title,
+      theme:     GENERIC_THEMES[index % GENERIC_THEMES.length],
+      chorusCue: GENERIC_CUES[index % GENERIC_CUES.length],
+      trivia:    t.chartPosition
+                   ? `Currently charting around #${t.chartPosition} on Spotify.`
+                   : t.streams
+                     ? `Has racked up roughly ${formatStreams(t.streams)} Spotify streams.`
+                     : "A current fan favourite in the live set.",
+      energy:    Math.max(70, 95 - index * 5)
+    }));
+  } else {
+    baseTracks = profile.tracks;
+  }
+
+  const tracks = baseTracks.map((track, index) => ({
     ...track,
     slot:  index + 1,
     color: profile.palette[index % profile.palette.length]
   }));
+
+  // Overlay Songstats popularity (chart position / streams) onto any track
+  // whose title matches a live top track.
+  const statByTitle = {};
+  liveTracks.forEach(t => { statByTitle[normalizeTitle(t.title)] = t; });
+  tracks.forEach(t => {
+    const s = statByTitle[normalizeTitle(t.title)];
+    if (s) {
+      t.chartPosition = s.chartPosition || null;
+      t.streams       = s.streams || null;
+      t.songstatsRank = s.rank || null;
+    }
+  });
 
   const [show, insights, hooks] = await Promise.all([
     fetchUpcomingConcert({ artist, city }),
@@ -227,25 +288,46 @@ async function buildHypecast(payload) {
     palette:                profile.palette,
     stageMood:              profile.stageMood,
     setlist:                tracks,
-    themes:                 insights.tracks.map(track => ({
-      title:        track.title,
-      theme:        track.theme,
-      cue:          track.chorusCue,
-      trivia:       track.trivia,
-      weight:       track.singalongWeight,
-      chorus:       track.chorus       || null,
-      fullLyrics:   track.fullLyrics   || null,
-      lyricsSource: track.lyricsSource || "unavailable",
-      preview:      track.preview      || null
-    })),
+    themes:                 insights.tracks.map(track => {
+      const stat = statByTitle[normalizeTitle(track.title)] || null;
+      return {
+        title:           track.title,
+        theme:           track.theme,
+        cue:             track.chorusCue,
+        trivia:          track.trivia,
+        weight:          track.singalongWeight,
+        chorus:          track.chorus          || null,
+        fullLyrics:      track.fullLyrics      || null,
+        lyricsSource:    track.lyricsSource    || "unavailable",
+        lyricsCopyright: track.lyricsCopyright || null,
+        preview:         track.preview         || null,
+        chartPosition:   stat ? stat.chartPosition : null,
+        streams:         stat ? stat.streams       : null,
+        streamsLabel:    stat ? formatStreams(stat.streams) : null
+      };
+    }),
+    songstats: {
+      status:     songstats.status,
+      source:     songstats.source,
+      artistName: songstats.artistName || artist,
+      drivesSetlist: !isKnownArtist && liveTracks.length >= 3,
+      topTracks: liveTracks.slice(0, 8).map(t => ({
+        title:         t.title,
+        rank:          t.rank,
+        chartPosition: t.chartPosition || null,
+        streams:       t.streams || null,
+        streamsLabel:  formatStreams(t.streams)
+      }))
+    },
     hooks:    hooks.hooks,
     chapters,
     script,
     services: {
-      jambase:    { source: show.source,    status: show.status },
-      musixmatch: { source: insights.source, status: insights.status },
-      lalal:      { source: hooks.source,   status: hooks.status },
-      elevenlabs: { source: voice.source,   status: voice.status }
+      jambase:    { source: show.source,      status: show.status },
+      songstats:  { source: songstats.source, status: songstats.status },
+      musixmatch: { source: insights.source,  status: insights.status },
+      lalal:      { source: hooks.source,     status: hooks.status },
+      elevenlabs: { source: voice.source,     status: voice.status }
     },
     voice
   };

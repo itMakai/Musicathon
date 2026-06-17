@@ -38,14 +38,40 @@
     const [speed,         setSpeedState]    = useState(1.0);
     const [activeChapter, setActiveChapter] = useState(-1);
 
-    const audioRef     = useRef(null);
-    const utteranceRef = useRef(null);
-    const timerRef     = useRef(null);
-    const startedAtRef = useRef(0);
-    const pausedAtRef  = useRef(0);
-    const speedRef     = useRef(1.0);
+    const audioRef       = useRef(null);
+    const utteranceRef   = useRef(null);
+    const narrationRef    = useRef(null);   // ElevenLabs HTMLAudioElement
+    const narrationUrlRef = useRef(null);   // object URL to revoke
+    const timerRef       = useRef(null);
+    const startedAtRef   = useRef(0);
+    const pausedAtRef    = useRef(0);
+    const speedRef       = useRef(1.0);
 
     speedRef.current = speed;
+
+    // Elapsed/duration come from the ElevenLabs audio element when present,
+    // otherwise from the wall-clock estimate used by Web Speech narration.
+    function currentDuration() {
+      const n = narrationRef.current;
+      if (n && n.duration && isFinite(n.duration) && n.duration > 0) return n.duration;
+      return episode ? episode.estimatedDurationSeconds : 300;
+    }
+    function currentElapsed() {
+      if (narrationRef.current) return narrationRef.current.currentTime;
+      return (Date.now() - startedAtRef.current) / 1000;
+    }
+    function clearNarration() {
+      if (narrationRef.current) {
+        try { narrationRef.current.pause(); } catch (_) {}
+        narrationRef.current.onended = null;
+        narrationRef.current.onerror = null;
+        narrationRef.current = null;
+      }
+      if (narrationUrlRef.current) {
+        URL.revokeObjectURL(narrationUrlRef.current);
+        narrationUrlRef.current = null;
+      }
+    }
 
     function stopBacking() {
       if (!audioRef.current) return;
@@ -98,16 +124,17 @@
 
     function stop() {
       if (window.speechSynthesis) window.speechSynthesis.cancel();
+      clearNarration();
       stopBacking(); resetTimer();
       setPlaying(false); setPaused(false); setProgress(0); setActiveChapter(-1);
       utteranceRef.current = null; startedAtRef.current = 0; pausedAtRef.current = 0;
     }
 
-    function updateProgress(duration) {
+    function updateProgress() {
       resetTimer();
       timerRef.current = window.setInterval(() => {
-        const elapsed = (Date.now() - startedAtRef.current) / 1000;
-        const pct = Math.min(100, (elapsed / duration) * 100);
+        const elapsed = currentElapsed();
+        const pct = Math.min(100, (elapsed / currentDuration()) * 100);
         setProgress(pct);
         if (episode && episode.chapters) {
           let found = -1;
@@ -117,45 +144,94 @@
           });
           setActiveChapter(found);
         }
-        if (pct >= 100) { resetTimer(); setPlaying(false); }
+        if (pct >= 100 && !narrationRef.current) { resetTimer(); setPlaying(false); }
       }, 250);
     }
 
-    function play() {
-      if (!episode) return;
-      if (playing && paused && window.speechSynthesis) {
-        window.speechSynthesis.resume();
-        setPaused(false);
-        startedAtRef.current = Date.now() - pausedAtRef.current * 1000;
-        updateProgress(episode.estimatedDurationSeconds);
-        return;
-      }
-      stop();
-      setPlaying(true); setPaused(false);
-      startedAtRef.current = Date.now();
+    function startSpeech(text) {
       startBacking();
       if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) {
-        updateProgress(45); return;
+        updateProgress(); return;
       }
-      const utt = new SpeechSynthesisUtterance(episode.script);
+      const utt = new SpeechSynthesisUtterance(text);
       utt.rate  = speedRef.current * 1.02;
       utt.pitch = 1.08; utt.volume = 0.95;
       utt.onend = stop; utt.onerror = stop;
       utteranceRef.current = utt;
-      updateProgress(episode.estimatedDurationSeconds);
+      updateProgress();
       window.speechSynthesis.speak(utt);
+    }
+
+    // Try ElevenLabs narration audio; resolves true on success, false to
+    // signal the caller to fall back to browser speech synthesis.
+    async function startNarrationAudio() {
+      if (!episode || !episode.voice || !episode.voice.available) return false;
+      try {
+        const res = await fetch("/api/narration", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ script: episode.script })
+        });
+        if (!res.ok) return false;
+        const blob = await res.blob();
+        if (!blob || blob.size === 0) return false;
+        const url = URL.createObjectURL(blob);
+        narrationUrlRef.current = url;
+        const audio = new Audio(url);
+        audio.playbackRate = speedRef.current;
+        audio.onended = stop;
+        audio.onerror = stop;
+        narrationRef.current = audio;
+        startBacking();
+        updateProgress();
+        await audio.play();
+        return true;
+      } catch (_) {
+        clearNarration();
+        return false;
+      }
+    }
+
+    function play() {
+      if (!episode) return;
+      // Resume from pause
+      if (playing && paused) {
+        if (narrationRef.current) {
+          narrationRef.current.play().catch(() => {});
+          setPaused(false);
+          updateProgress();
+          return;
+        }
+        if (window.speechSynthesis) {
+          window.speechSynthesis.resume();
+          setPaused(false);
+          startedAtRef.current = Date.now() - pausedAtRef.current * 1000;
+          updateProgress();
+          return;
+        }
+      }
+      stop();
+      setPlaying(true); setPaused(false);
+      startedAtRef.current = Date.now();
+      // Prefer ElevenLabs narration; fall back to Web Speech.
+      startNarrationAudio().then(ok => { if (!ok) startSpeech(episode.script); });
     }
 
     function pause() {
       if (!playing || paused) return;
-      if (window.speechSynthesis) window.speechSynthesis.pause();
+      if (narrationRef.current) {
+        narrationRef.current.pause();
+      } else if (window.speechSynthesis) {
+        window.speechSynthesis.pause();
+        pausedAtRef.current = (Date.now() - startedAtRef.current) / 1000;
+      }
       resetTimer();
-      pausedAtRef.current = (Date.now() - startedAtRef.current) / 1000;
       setPaused(true);
     }
 
     function setSpeed(v) {
       setSpeedState(v);
+      if (narrationRef.current) narrationRef.current.playbackRate = v;
       if (utteranceRef.current && window.speechSynthesis) utteranceRef.current.rate = v * 1.02;
     }
 
@@ -165,9 +241,20 @@
       if (!ch) return;
       const [m, s] = ch.start.split(":").map(Number);
       const targetSecs = m * 60 + s;
+      setActiveChapter(i);
+
+      // ElevenLabs audio: seek within the single rendered narration.
+      if (narrationRef.current) {
+        const dur = currentDuration();
+        narrationRef.current.currentTime = Math.min(targetSecs, Math.max(0, dur - 0.5));
+        narrationRef.current.play().catch(() => {});
+        setProgress(Math.min(100, (targetSecs / dur) * 100));
+        updateProgress();
+        return;
+      }
+
       startedAtRef.current = Date.now() - targetSecs * 1000;
       setProgress(Math.min(100, (targetSecs / episode.estimatedDurationSeconds) * 100));
-      setActiveChapter(i);
       if (window.speechSynthesis) {
         window.speechSynthesis.cancel();
         const partial = episode.chapters.slice(i).map(c => c.copy).join(" ... ");
@@ -287,10 +374,11 @@
 
     const serviceEntries = [
       ["JamBase",    episode.services.jambase],
+      ["Songstats",  episode.services.songstats],
       ["Musixmatch", episode.services.musixmatch],
       ["LALAL.AI",   episode.services.lalal],
       ["ElevenLabs", episode.services.elevenlabs]
-    ];
+    ].filter(([, svc]) => svc);
 
     const moodGradient = useMemo(() => cssGradient(episode.palette), [episode.palette]);
     const elapsedSecs  = useMemo(
@@ -573,14 +661,17 @@
           ),
           h("span", { className: "lyric-energy-val" }, `${track.weight}`)
         ),
-        isLive && h("span", { className: "lyrics-source-badge" }, `📍 ${track.lyricsSource}`)
+        isLive && h("span", { className: "lyrics-source-badge" }, `📍 ${track.lyricsSource}`),
+        track.chartPosition && h("span", { className: "lyrics-source-badge" }, `📈 #${track.chartPosition} Spotify`),
+        !track.chartPosition && track.streamsLabel && h("span", { className: "lyrics-source-badge" }, `▶ ${track.streamsLabel} streams`)
       ),
 
       // Lyrics display
       displayedLyrics && h("div", { className: "lyric-body" },
         h("div", { className: "lyric-body-inner" },
           h("pre", { className: "lyric-text" }, displayedLyrics)
-        )
+        ),
+        track.lyricsCopyright && h("p", { className: "lyric-copyright" }, track.lyricsCopyright)
       ),
 
       // No lyrics notice
@@ -621,8 +712,13 @@
             `${episode.show.venue} · ${formatShowDate(episode.show.dateISO)} · Doors ${episode.show.doors}`
           )
         ),
-        lyricsFound > 0 && h("span", { className: "lyrics-found-badge" },
-          `${lyricsFound}/${episode.themes.length} lyrics fetched`
+        h("div", { className: "lyrics-header-badges" },
+          episode.songstats && episode.songstats.drivesSetlist && h("span", { className: "lyrics-found-badge trending" },
+            "🔥 Live top tracks via Songstats"
+          ),
+          lyricsFound > 0 && h("span", { className: "lyrics-found-badge" },
+            `${lyricsFound}/${episode.themes.length} lyrics fetched`
+          )
         )
       ),
 
@@ -668,7 +764,7 @@
   function AppFooter() {
     return h("footer", { className: "app-footer" },
       h("span", null, "Powered by"),
-      ["JamBase", "Musixmatch", "LALAL.AI", "ElevenLabs"].map(t =>
+      ["JamBase", "Songstats", "Musixmatch", "LALAL.AI", "ElevenLabs"].map(t =>
         h("span", { key: t, className: "tech-tag" }, t)
       ),
       h("span", null, "· HypeCast © 2026")
