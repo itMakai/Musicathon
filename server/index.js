@@ -3,8 +3,8 @@ const path = require("node:path");
 const { promises: fs } = require("node:fs");
 const { buildHypecast } = require("./hypecastEngine");
 
-const HOST = "127.0.0.1";
-const START_PORT = Number.parseInt(process.env.PORT || "5173", 10);
+const HOST = "0.0.0.0";
+const START_PORT = Number.parseInt(process.env.PORT || "5000", 10);
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
 
 const MIME_TYPES = {
@@ -127,11 +127,6 @@ function listen(port) {
   });
 
   server.on("error", (error) => {
-    if (error.code === "EADDRINUSE" && port < START_PORT + 20) {
-      listen(port + 1);
-      return;
-    }
-
     throw error;
   });
 
