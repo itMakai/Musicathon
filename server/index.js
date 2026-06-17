@@ -20,6 +20,30 @@ const MIME_TYPES = {
   ".ico": "image/x-icon"
 };
 
+// Lightweight in-memory sliding-window rate limiter. Used to protect the
+// narration endpoint, which fronts a paid (ElevenLabs) API key, from abuse.
+const NARRATION_WINDOW_MS = 60_000;
+const NARRATION_MAX_HITS = 10;
+const narrationHits = new Map();
+
+function isRateLimited(key) {
+  const now = Date.now();
+  const recent = (narrationHits.get(key) || []).filter((t) => now - t < NARRATION_WINDOW_MS);
+  if (recent.length >= NARRATION_MAX_HITS) {
+    narrationHits.set(key, recent);
+    return true;
+  }
+  recent.push(now);
+  narrationHits.set(key, recent);
+  return false;
+}
+
+function clientKey(request) {
+  const forwarded = request.headers["x-forwarded-for"];
+  if (forwarded) return String(forwarded).split(",")[0].trim();
+  return request.socket?.remoteAddress || "unknown";
+}
+
 function sendJson(response, statusCode, payload) {
   const body = JSON.stringify(payload);
   response.writeHead(statusCode, {
@@ -114,10 +138,18 @@ async function handleRequest(request, response) {
 
   if (request.method === "POST" && url.pathname === "/api/narration") {
     try {
+      if (isRateLimited(clientKey(request))) {
+        sendJson(response, 429, { error: "Too many narration requests. Please wait a moment." });
+        return;
+      }
       const body = await readRequestBody(request);
       const script = String(body.script || "").trim();
       if (!script) {
         sendJson(response, 400, { error: "A script is required." });
+        return;
+      }
+      if (script.length > 5000) {
+        sendJson(response, 413, { error: "Script is too long for narration." });
         return;
       }
       const result = await synthesizeNarration({ script, voiceId: body.voiceId });

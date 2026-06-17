@@ -811,18 +811,20 @@ async function fetchSongstatsTopTracks({ artist }) {
       return { status: "configured", source: "Songstats: no artist match", topTracks: [], artistName: artist };
     }
 
-    const url  = `${SONGSTATS_BASE}/artists/top_tracks?songstats_artist_id=${encodeURIComponent(found.id)}&source=spotify`;
+    // top_tracks requires source + metric + scope; track records live under
+    // data[].top_tracks with track_name + rank_value (the metric's value).
+    const url  = `${SONGSTATS_BASE}/artists/top_tracks?songstats_artist_id=${encodeURIComponent(found.id)}&source=spotify&metric=streams&scope=total`;
     const data = await requestJson(url, { headers: songstatsHeaders() });
     const arr  = findArray(data, (x) =>
-      x && typeof x === "object" && (x.title || x.track_title || x.name)
+      x && typeof x === "object" && (x.track_name || x.title || x.track_title)
     ) || [];
 
     const topTracks = arr.slice(0, 8).map((t, i) => ({
-      title:         t.title || t.track_title || t.name,
+      title:         t.track_name || t.title || t.track_title,
       isrc:          t.isrc || null,
       rank:          i + 1,
-      streams:       pickStat(t, ["streams_total", "streams", "spotify_streams_total", "value"]),
-      chartPosition: pickStat(t, ["chart_position", "charts_current", "rank"])
+      streams:       Number(t.rank_value) || pickStat(t, ["streams_total", "streams", "value"]),
+      chartPosition: pickStat(t, ["chart_position", "charts_current"])
     })).filter((t) => t.title);
 
     return {
@@ -1076,7 +1078,7 @@ async function fetchLyricsInsights({ artist, tracks }) {
       previewCount ? `${previewCount} iTunes previews`       : null
     ].filter(Boolean).join(" · ") || "Lyrics unavailable",
     status: anyLyrics
-      ? (lyricSources.some(s => s.includes(".")) ? "live" : "configured")
+      ? (lyricSources.some(s => s !== "curated") ? "live" : "configured")
       : (process.env.MUSIXMATCH_API_KEY ? "configured" : "demo"),
     previewCount,
     artist,

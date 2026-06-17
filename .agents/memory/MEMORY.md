@@ -1,0 +1,1 @@
+- [Songstats API contract](songstats-api.md) — top_tracks is progressive: 200 with no tracks means you owe more params (source+metric+scope); records nested at data[].top_tracks.
