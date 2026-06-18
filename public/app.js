@@ -42,6 +42,11 @@
     const utteranceRef   = useRef(null);
     const narrationRef    = useRef(null);   // ElevenLabs HTMLAudioElement
     const narrationUrlRef = useRef(null);   // object URL to revoke
+    const hookBedRef      = useRef(null);   // LALAL instrumental HTMLAudioElement
+    const hookBedUrlRef   = useRef(null);   // object URL to revoke
+    const hookBedLoadingRef = useRef(false);// in-flight guard for the hook-bed fetch
+    const playingRef      = useRef(false);  // live playback flag for async guards
+    const sessionRef      = useRef(0);      // monotonic playback-session token
     const timerRef       = useRef(null);
     const startedAtRef   = useRef(0);
     const pausedAtRef    = useRef(0);
@@ -81,6 +86,65 @@
       audioRef.current = null;
     }
 
+    function stopHookBed() {
+      hookBedLoadingRef.current = false;
+      if (hookBedRef.current) {
+        try { hookBedRef.current.pause(); } catch (_) {}
+        hookBedRef.current.onerror = null;
+        hookBedRef.current = null;
+      }
+      if (hookBedUrlRef.current) {
+        URL.revokeObjectURL(hookBedUrlRef.current);
+        hookBedUrlRef.current = null;
+      }
+    }
+
+    function leadTrackTitle() {
+      if (!episode) return null;
+      if (episode.hooks && episode.hooks[0])     return episode.hooks[0].track;
+      if (episode.themes && episode.themes[0])   return episode.themes[0].title;
+      if (episode.setlist && episode.setlist[0]) return episode.setlist[0].title;
+      return null;
+    }
+
+    // Fetches the real LALAL instrumental for the lead track and crossfades
+    // it in under the narration, replacing the synthetic bed. Silently keeps
+    // the synth bed when LALAL is unconfigured (503) or the fetch fails.
+    async function startHookBed() {
+      if (hookBedRef.current || hookBedLoadingRef.current) return; // already running/loading
+      const title = leadTrackTitle();
+      if (!episode || !title) return;
+      const session = sessionRef.current;        // bind to the current playback session
+      hookBedLoadingRef.current = true;
+      try {
+        const res = await fetch("/api/hookbed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ artist: episode.artist, title })
+        });
+        if (!res.ok) return;
+        const blob = await res.blob();
+        if (!blob || blob.size === 0) return;
+        // Bail if the user stopped/restarted while the bed was loading.
+        if (!playingRef.current || session !== sessionRef.current || hookBedRef.current) return;
+        const url = URL.createObjectURL(blob);
+        hookBedUrlRef.current = url;
+        const audio = new Audio(url);
+        audio.loop   = true;
+        audio.volume = 0.22;
+        audio.onerror = () => stopHookBed();
+        hookBedRef.current = audio;
+        await audio.play();
+        // Re-check after play() resolves; stop if the session changed mid-flight.
+        if (session !== sessionRef.current) { stopHookBed(); return; }
+        stopBacking();                           // retire the synth bed
+      } catch (_) {
+        stopHookBed();
+      } finally {
+        if (session === sessionRef.current) hookBedLoadingRef.current = false;
+      }
+    }
+
     function startBacking() {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC || !episode) return;
@@ -118,14 +182,18 @@
       }).flat();
 
       audioRef.current = { context: ctx, gain: master, nodes };
+
+      // Bring in the real LALAL instrumental bed (replaces synth once ready).
+      startHookBed();
     }
 
     function resetTimer() { window.clearInterval(timerRef.current); timerRef.current = null; }
 
     function stop() {
+      playingRef.current = false;
       if (window.speechSynthesis) window.speechSynthesis.cancel();
       clearNarration();
-      stopBacking(); resetTimer();
+      stopBacking(); stopHookBed(); resetTimer();
       setPlaying(false); setPaused(false); setProgress(0); setActiveChapter(-1);
       utteranceRef.current = null; startedAtRef.current = 0; pausedAtRef.current = 0;
     }
@@ -166,6 +234,7 @@
     // signal the caller to fall back to browser speech synthesis.
     async function startNarrationAudio() {
       if (!episode || !episode.voice || !episode.voice.available) return false;
+      const session = sessionRef.current;        // bind to the current playback session
       try {
         const res = await fetch("/api/narration", {
           method: "POST",
@@ -175,6 +244,8 @@
         if (!res.ok) return false;
         const blob = await res.blob();
         if (!blob || blob.size === 0) return false;
+        // Bail if the user stopped/restarted while narration was loading.
+        if (!playingRef.current || session !== sessionRef.current) return true;
         const url = URL.createObjectURL(blob);
         narrationUrlRef.current = url;
         const audio = new Audio(url);
@@ -196,6 +267,7 @@
       if (!episode) return;
       // Resume from pause
       if (playing && paused) {
+        if (hookBedRef.current) hookBedRef.current.play().catch(() => {});
         if (narrationRef.current) {
           narrationRef.current.play().catch(() => {});
           setPaused(false);
@@ -211,14 +283,20 @@
         }
       }
       stop();
+      sessionRef.current += 1;                  // new playback session
+      const session = sessionRef.current;
+      playingRef.current = true;
       setPlaying(true); setPaused(false);
       startedAtRef.current = Date.now();
       // Prefer ElevenLabs narration; fall back to Web Speech.
-      startNarrationAudio().then(ok => { if (!ok) startSpeech(episode.script); });
+      startNarrationAudio().then(ok => {
+        if (!ok && playingRef.current && session === sessionRef.current) startSpeech(episode.script);
+      });
     }
 
     function pause() {
       if (!playing || paused) return;
+      if (hookBedRef.current) { try { hookBedRef.current.pause(); } catch (_) {} }
       if (narrationRef.current) {
         narrationRef.current.pause();
       } else if (window.speechSynthesis) {

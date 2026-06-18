@@ -11,14 +11,16 @@ HypeCast is a React + Node.js prototype for a live music prep experience. A fan 
 - **API endpoints**:
   - `GET /api/health` — health check.
   - `POST /api/hypecast` — generates a HypeCast episode from `{ city, artist }`.
-  - `POST /api/narration` — synthesizes the script as ElevenLabs audio (`{ script, voiceId? }` → `audio/mpeg`); returns 503 when ElevenLabs is unconfigured so the browser falls back to Web Speech.
+  - `POST /api/narration` — synthesizes the script as ElevenLabs audio (`{ script, voiceId? }` → `audio/mpeg`); returns 503 when ElevenLabs is unconfigured so the browser falls back to Web Speech. Rate-limited per client.
+  - `POST /api/hookbed` — extracts a real instrumental "hook bed" for a track via LALAL.AI (`{ artist, title }` → audio); returns 503 when LALAL is unconfigured. Rate-limited per client; finished beds are cached in-memory.
 
 ## Live Integrations
 
 All adapters make real HTTP calls when their key is present, and degrade gracefully to demo data otherwise:
 - **Songstats** (`apikey` header) — searches the artist, fetches current top tracks. Drives the real setlist for artists without a curated profile and overlays chart position / stream counts onto every track. Response envelopes are loosely typed and parsed defensively.
 - **Musixmatch** (`apikey` query) — `matcher.lyrics.get` is the primary lyrics source; the non-commercial disclaimer is stripped for display while `lyrics_copyright` is surfaced in the UI. Falls back to lyrics.ovh / lrclib.
-- **JamBase** (`apikey` query) — fetches the soonest upcoming event for the artist/city.
+- **JamBase** (`apikey` query) — fetches the soonest upcoming event for the artist/city. Upstream errors are logged server-side only (never surfaced to the client, since the body echoes the key).
+- **LALAL.AI** (`Authorization: license <key>`) — separates the vocals from a track's iTunes preview and serves the instrumental "no_vocals" stem as the podcast's background music bed. The browser layers it under the narration (with a synthesized bed as the instant fallback while LALAL processes).
 - **ElevenLabs** (`xi-api-key` header) — text-to-speech for the narrated script.
 
 ## Replit Environment

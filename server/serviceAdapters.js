@@ -614,8 +614,11 @@ async function fetchUpcomingConcert({ artist, city }) {
       confidence: 1
     };
   } catch (e) {
+    // Never surface the upstream body — it can echo the API key. Log the
+    // detail server-side and return a generic, safe status to the client.
+    console.warn("JamBase request failed:", e.message);
     const demo = buildDemoConcert({ artist, city });
-    demo.source = `JamBase error (${e.message}); demo data active`;
+    demo.source = "JamBase unavailable (check API key); demo data active";
     return demo;
   }
 }
@@ -721,6 +724,36 @@ function postForBuffer(url, { headers = {}, body, timeout = 30000 } = {}) {
     req.on("timeout", () => { req.destroy(); reject(new Error("Timeout")); });
     req.write(payload);
     req.end();
+  });
+}
+
+/**
+ * HTTP GET that resolves to a binary Buffer (used to download audio).
+ * Follows redirects. Returns { buffer, contentType }.
+ */
+function downloadBuffer(url, { timeout = 20000, redirects = 3 } = {}) {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith("https") ? https : http;
+    const req = lib.get(url, { timeout }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects > 0) {
+        res.resume();
+        downloadBuffer(res.headers.location, { timeout, redirects: redirects - 1 }).then(resolve, reject);
+        return;
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        reject(new Error(`HTTP ${res.statusCode}`));
+        return;
+      }
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve({
+        buffer:      Buffer.concat(chunks),
+        contentType: res.headers["content-type"] || "application/octet-stream"
+      }));
+    });
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(); reject(new Error("Download timeout")); });
   });
 }
 
@@ -1088,16 +1121,135 @@ async function fetchLyricsInsights({ artist, tracks }) {
 
 
 
+/* ─────────────────────────────────────────────────────────
+   LALAL.AI  (real instrumental stem separation)
+   Flow: upload preview → split (vocals/phoenix) → poll → download
+   the "no_vocals" back_track. Auth: `Authorization: license <key>`.
+───────────────────────────────────────────────────────── */
+const LALAL_BASE = "https://www.lalal.ai";
+
+function lalalPost(path, { extraHeaders = {}, body, timeout = 30000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const u       = new URL(LALAL_BASE + path);
+    const payload = Buffer.isBuffer(body) ? body : Buffer.from(body || "");
+    const req = https.request({
+      hostname: u.hostname,
+      path:     u.pathname + u.search,
+      method:   "POST",
+      headers: {
+        "Authorization":  `license ${process.env.LALAL_API_KEY || ""}`,
+        "Content-Length": payload.length,
+        ...extraHeaders
+      },
+      timeout
+    }, (res) => {
+      let raw = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => { raw += c; });
+      res.on("end", () => {
+        try { resolve(JSON.parse(raw)); }
+        catch (e) { reject(new Error(`LALAL invalid JSON: ${raw.slice(0, 120)}`)); }
+      });
+    });
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(); reject(new Error("LALAL timeout")); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// In-memory cache of finished hook beds (LALAL processing is paid + slow).
+const hookBedCache    = new Map();
+const HOOK_BED_CACHE_MAX = 30;
+
 /**
- * Simulates a LALAL.AI call to extract instrumental hook snippets.
- * Returns hook metadata (BPM, pattern, mood, timing hint).
+ * Real LALAL.AI pipeline: takes a track's iTunes preview, separates the
+ * vocals, and returns the instrumental ("no_vocals") stem as audio.
+ * Resolves to { buffer, contentType, track, artist } or null when no key.
+ * Cached per artist|title so repeat plays don't re-spend the LALAL quota.
+ */
+async function extractHookBed({ artist, title }) {
+  if (!process.env.LALAL_API_KEY) return null;
+
+  const cacheKey = `${normalizeKey(artist)}|${normalizeKey(title)}`;
+  if (hookBedCache.has(cacheKey)) return hookBedCache.get(cacheKey);
+
+  // 1. Real audio source — the artist's own iTunes preview.
+  const preview = await fetchiTunesPreview(artist, title);
+  if (!preview || !preview.previewUrl) return null;
+  const audio = await downloadBuffer(preview.previewUrl, { timeout: 20000 });
+
+  // 2. Upload the preview to LALAL.
+  const up = await lalalPost("/api/upload/", {
+    extraHeaders: {
+      "Content-Disposition": 'attachment; filename="hook.mp4"',
+      "Content-Type":        "application/octet-stream"
+    },
+    body: audio.buffer
+  });
+  if (!up || up.status !== "success" || !up.id) {
+    throw new Error(up && up.error ? up.error : "LALAL upload failed");
+  }
+  const id = up.id;
+
+  // 3. Split: separating "vocals" leaves the instrumental as back_track.
+  const params = encodeURIComponent(JSON.stringify([{ id, stem: "vocals", splitter: "phoenix" }]));
+  const sp = await lalalPost("/api/split/", {
+    extraHeaders: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: `params=${params}`
+  });
+  if (!sp || sp.status !== "success") {
+    throw new Error(sp && sp.error ? sp.error : "LALAL split failed");
+  }
+
+  // 4. Poll until the stem is ready (typically ~5-10s for a 30s preview).
+  let backTrack = null;
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 2500));
+    const ck = await lalalPost("/api/check/", {
+      extraHeaders: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `id=${id}`
+    });
+    const r = ck && ck.result && ck.result[id];
+    if (!r) continue;
+    const state = r.task && r.task.state;
+    if (state === "success" && r.split && (r.split.back_track || r.split.stem_track)) {
+      backTrack = r.split.back_track || r.split.stem_track;
+      break;
+    }
+    if (state === "error" || state === "cancelled") {
+      throw new Error("LALAL processing failed");
+    }
+  }
+  if (!backTrack) throw new Error("LALAL timed out");
+
+  // 5. Download the instrumental stem.
+  const stem   = await downloadBuffer(backTrack, { timeout: 30000 });
+  const result = {
+    buffer:      stem.buffer,
+    contentType: (stem.contentType && stem.contentType.startsWith("audio")) ? stem.contentType : "audio/mpeg",
+    track:       preview.trackName  || title,
+    artist:      preview.artistName || artist
+  };
+
+  if (hookBedCache.size >= HOOK_BED_CACHE_MAX) {
+    hookBedCache.delete(hookBedCache.keys().next().value);
+  }
+  hookBedCache.set(cacheKey, result);
+  return result;
+}
+
+/**
+ * Hook metadata for the episode payload (BPM/pattern/mood + service status).
+ * The actual instrumental bed is produced on demand by extractHookBed via
+ * the /api/hookbed endpoint; this reports availability and per-track hints.
  */
 async function extractInstrumentalHooks({ tracks }) {
   return {
     source: process.env.LALAL_API_KEY
-              ? "LALAL.AI configured; demo synth hooks active"
+              ? "LALAL.AI live stem separation"
               : "LALAL.AI demo synth hooks",
-    status: process.env.LALAL_API_KEY ? "configured" : "demo",
+    status: process.env.LALAL_API_KEY ? "live" : "demo",
     hooks: tracks.slice(0, 5).map((track, index) => ({
       track:           track.title,
       durationSeconds: 5,
@@ -1155,6 +1307,7 @@ module.exports = {
   fetchLyricsInsights,
   fetchSongstatsTopTracks,
   extractInstrumentalHooks,
+  extractHookBed,
   prepareVoiceNarration,
   synthesizeNarration
 };

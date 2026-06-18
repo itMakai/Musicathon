@@ -2,7 +2,7 @@ const http = require("node:http");
 const path = require("node:path");
 const { promises: fs } = require("node:fs");
 const { buildHypecast } = require("./hypecastEngine");
-const { synthesizeNarration } = require("./serviceAdapters");
+const { synthesizeNarration, extractHookBed } = require("./serviceAdapters");
 
 const HOST = "0.0.0.0";
 const START_PORT = Number.parseInt(process.env.PORT || "5000", 10);
@@ -26,10 +26,10 @@ const NARRATION_WINDOW_MS = 60_000;
 const NARRATION_MAX_HITS = 10;
 const narrationHits = new Map();
 
-function isRateLimited(key) {
+function isRateLimited(key, max = NARRATION_MAX_HITS) {
   const now = Date.now();
   const recent = (narrationHits.get(key) || []).filter((t) => now - t < NARRATION_WINDOW_MS);
-  if (recent.length >= NARRATION_MAX_HITS) {
+  if (recent.length >= max) {
     narrationHits.set(key, recent);
     return true;
   }
@@ -138,7 +138,7 @@ async function handleRequest(request, response) {
 
   if (request.method === "POST" && url.pathname === "/api/narration") {
     try {
-      if (isRateLimited(clientKey(request))) {
+      if (isRateLimited(`narration:${clientKey(request)}`)) {
         sendJson(response, 429, { error: "Too many narration requests. Please wait a moment." });
         return;
       }
@@ -165,6 +165,36 @@ async function handleRequest(request, response) {
       response.end(result.buffer);
     } catch (error) {
       sendJson(response, 502, { error: error.message || "Narration synthesis failed." });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/hookbed") {
+    try {
+      if (isRateLimited(`hookbed:${clientKey(request)}`, 6)) {
+        sendJson(response, 429, { error: "Too many hook requests. Please wait a moment." });
+        return;
+      }
+      const body = await readRequestBody(request);
+      const artist = String(body.artist || "").trim();
+      const title  = String(body.title  || "").trim();
+      if (!artist || !title) {
+        sendJson(response, 400, { error: "artist and title are required." });
+        return;
+      }
+      const bed = await extractHookBed({ artist, title });
+      if (!bed) {
+        sendJson(response, 503, { error: "LALAL.AI hook beds are not configured." });
+        return;
+      }
+      response.writeHead(200, {
+        "Content-Type": bed.contentType || "audio/mpeg",
+        "Content-Length": bed.buffer.length,
+        "Cache-Control": "no-store"
+      });
+      response.end(bed.buffer);
+    } catch (error) {
+      sendJson(response, 502, { error: error.message || "Hook extraction failed." });
     }
     return;
   }
