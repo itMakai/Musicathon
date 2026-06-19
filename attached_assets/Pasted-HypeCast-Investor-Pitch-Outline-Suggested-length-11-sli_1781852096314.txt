@@ -1,0 +1,63 @@
+HypeCast — Investor Pitch Outline
+Suggested length: 11 slides
+
+Slide 1 — Title
+HypeCast
+Tagline: "Your five-minute hype show before every concert."
+One line: AI-generated, personalized pre-show audio for live music fans.
+Footer: [Your name] · [contact] · [date]
+Slide 2 — The Problem
+Headline: "Fans show up to concerts cold."
+The hours before a show are dead time — fans are excited but unprepared.
+They don't know the likely setlist, the venue, or the songs they should brush up on.
+Generic Spotify playlists aren't personal to this artist on this night in this city.
+The pre-show moment is high-intent and completely unmonetized.
+Slide 3 — The Solution
+Headline: "Enter a city and an artist. Get a personal hype podcast."
+A ~5-minute audio episode built on demand, covering:
+Show details (venue, date)
+Predicted setlist & song themes
+Chorus cues and trivia to learn before the show
+A real instrumental music bed under a radio-DJ narration
+Three vibe modes: Radio DJ, Cinematic, Bestie.
+Slide 4 — Product Demo / How It Works
+Three-step flow: Input (city + artist) → Build (live data + AI) → Listen (5-min episode).
+Image: screenshot of the HypeCast player UI.
+Note: live working prototype — not a mockup.
+Slide 5 — The Moat: Live Data + AI Stack
+Headline: "Four live integrations, orchestrated into one episode."
+SongStats — real setlists, popularity & streaming signals
+Musixmatch — licensed lyrics → themes & trivia
+LALAL.AI — extracts a real instrumental bed from the artist's own track
+ElevenLabs — broadcast-quality DJ narration voice
+The defensibility is the orchestration, not any single API.
+Slide 6 — Why Now
+AI voice synthesis just crossed the quality bar for broadcast-grade narration.
+Stem-separation (instrumental extraction) is now real-time and affordable.
+Live music is booming post-pandemic; fans spend more on experiences than ever.
+Music-data APIs are finally accessible to build on. (Mark any stat you add here as sourced.)
+Slide 7 — Market
+Headline: "Every concert ticket is a hype opportunity."
+TAM / SAM / SOM framing — [fill in with sourced figures: global live music revenue, tickets sold/year].
+Beachhead: superfans of touring artists. Expansion: festivals, venues, ticketing platforms.
+Slide 8 — Business Model
+Headline: "Where the revenue comes from."
+Options to pitch (pick 1–2 primary):
+B2C — freemium; premium episodes / unlimited generations.
+B2B2C — white-label for ticketing & venue apps (Ticketmaster, DICE, Bandsintown).
+Artist/label partnerships — official pre-show content for tours.
+[fill in pricing assumptions.]
+Slide 9 — Traction / Roadmap
+If you have traction: [users, episodes generated, waitlist, LOIs — real numbers only].
+If pre-traction, frame as roadmap:
+Now: working prototype, 4 live integrations.
+Next: JamBase concert data live, mobile app, account/save features.
+Later: ticketing partnerships, artist-official episodes.
+Slide 10 — Team
+[Founder(s), relevant background — music, AI, consumer.]
+Why this team wins. [fill in.]
+Slide 11 — The Ask
+Headline: "What we're raising and why."
+Raising [$ amount] to [hire / go to market / land first partnerships].
+Key milestones this funds over the next [N] months.
+Contact: [email / link].
