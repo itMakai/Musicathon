@@ -310,6 +310,17 @@
     </div>
     <div class="progress-rail"><span id="progress"></span></div>
 
+    <!-- Export status overlay (shown while building the PDF) -->
+    <div class="export-overlay" id="export-overlay" hidden aria-hidden="true">
+      <div class="export-card" role="status" aria-live="polite">
+        <div class="export-spinner" aria-hidden="true"></div>
+        <p class="export-title">Building your deck…</p>
+        <p class="export-sub" id="export-sub">Rendering slides</p>
+      </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="/deck.js"></script>
   </body>
 </html>

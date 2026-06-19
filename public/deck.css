@@ -429,6 +429,35 @@ h1, h2, h4, p, ul { margin: 0; }
   .eq span, .onair-dot { animation: none !important; }
 }
 
+/* ── EXPORT OVERLAY ───────────────────────────────────── */
+.export-overlay {
+  position: fixed; inset: 0; z-index: 60;
+  display: grid; place-items: center;
+  background: rgba(8, 10, 13, 0.78);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
+.export-overlay[hidden] { display: none; }
+.export-card {
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  padding: 32px 40px; border-radius: 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-bright);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  text-align: center;
+}
+.export-spinner {
+  width: 44px; height: 44px; border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.12);
+  border-top-color: var(--accent-cyan);
+  animation: export-spin 0.8s linear infinite;
+}
+@keyframes export-spin { to { transform: rotate(360deg); } }
+.export-title {
+  font-family: var(--font-display); font-weight: 700; font-size: 1.1rem;
+  color: var(--text-primary);
+}
+.export-sub { color: var(--text-muted); font-size: 0.9rem; }
+
 /* ── PRINT / SAVE AS PDF ──────────────────────────────── */
 @media print {
   @page { size: landscape; margin: 0; }
