@@ -70,6 +70,77 @@
     return new Promise((resolve) => requestAnimationFrame(() => resolve()));
   }
 
+  function readCssVar(name, fallback) {
+    const v = getComputedStyle(document.documentElement)
+      .getPropertyValue(name)
+      .trim();
+    return v || fallback;
+  }
+
+  // Build the .title-word gradient (mirrors deck.css: 135deg cream→gold→pink)
+  // as a CanvasGradient mapped across the text's bounding box.
+  function makeTitleGradient(ctx, angleDeg, w, h) {
+    const a = (angleDeg * Math.PI) / 180;
+    const dx = Math.sin(a);
+    const dy = -Math.cos(a);
+    const len = Math.abs(w * Math.sin(a)) + Math.abs(h * Math.cos(a));
+    const cx = w / 2;
+    const cy = h / 2;
+    const g = ctx.createLinearGradient(
+      cx - (dx * len) / 2,
+      cy - (dy * len) / 2,
+      cx + (dx * len) / 2,
+      cy + (dy * len) / 2
+    );
+    g.addColorStop(0.25, "#f0ece4");
+    g.addColorStop(0.65, readCssVar("--accent-gold", "#f5c842"));
+    g.addColorStop(1, readCssVar("--accent-pink", "#f04e7a"));
+    return g;
+  }
+
+  // Rasterize gradient text to a PNG data URL. html2canvas can't render a
+  // background-clip:text gradient, so we paint it ourselves and substitute an
+  // <img> during capture, preserving the on-screen brand gradient in the PDF.
+  const TITLE_RENDER_SCALE = 2;
+  function buildGradientTextImage(text, font) {
+    try {
+      const fontStr = `${font.fontWeight} ${font.fontSize}px ${font.fontFamily}`;
+      const measureCtx = document.createElement("canvas").getContext("2d");
+      if (!measureCtx) return null;
+      measureCtx.font = fontStr;
+      if ("letterSpacing" in measureCtx) {
+        measureCtx.letterSpacing = `${font.letterSpacing}px`;
+      }
+      const m = measureCtx.measureText(text);
+      const ascent = m.actualBoundingBoxAscent || font.fontSize * 0.8;
+      const descent = m.actualBoundingBoxDescent || font.fontSize * 0.25;
+      const padX = font.fontSize * 0.14;
+      const padY = font.fontSize * 0.1;
+      const logicalW = Math.ceil(m.width + padX * 2);
+      const logicalH = Math.ceil(ascent + descent + padY * 2);
+
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(logicalW * TITLE_RENDER_SCALE);
+      canvas.height = Math.ceil(logicalH * TITLE_RENDER_SCALE);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.scale(TITLE_RENDER_SCALE, TITLE_RENDER_SCALE);
+      ctx.font = fontStr;
+      if ("letterSpacing" in ctx) {
+        ctx.letterSpacing = `${font.letterSpacing}px`;
+      }
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+      ctx.fillStyle = makeTitleGradient(ctx, 135, logicalW, logicalH);
+      ctx.fillText(text, padX, padY + ascent);
+
+      return { dataUrl: canvas.toDataURL("image/png"), width: logicalW, height: logicalH };
+    } catch (err) {
+      console.warn("Gradient title rasterization failed:", err);
+      return null;
+    }
+  }
+
   // Make a single slide visible + freeze motion inside the cloned document that
   // html2canvas renders, without disturbing the live deck the user is viewing.
   function prepareClone(clonedDoc, slideIndex) {
@@ -93,11 +164,37 @@
     clonedDoc.head.appendChild(style);
 
     // html2canvas can't rasterize background-clip:text gradients, which would
-    // leave the title invisible. Swap to a solid on-brand fill for the capture.
+    // leave the title invisible. Paint the gradient ourselves and swap in an
+    // <img> so the PDF keeps the on-screen cream→gold→pink title gradient.
+    const cloneWin = clonedDoc.defaultView || window;
     clonedDoc.querySelectorAll(".title-word").forEach((el) => {
+      const cs = cloneWin.getComputedStyle(el);
+      const fontSize = parseFloat(cs.fontSize) || 144;
+      let letterSpacing = parseFloat(cs.letterSpacing);
+      if (!isFinite(letterSpacing)) letterSpacing = -0.03 * fontSize;
+      const title = buildGradientTextImage(el.textContent || "", {
+        fontSize,
+        fontWeight: cs.fontWeight || "800",
+        fontFamily: cs.fontFamily || '"Space Grotesk", "Inter", sans-serif',
+        letterSpacing,
+      });
+
       el.style.background = "none";
-      el.style.webkitTextFillColor = "#f5c842";
-      el.style.color = "#f5c842";
+      if (title) {
+        el.textContent = "";
+        el.style.webkitTextFillColor = "initial";
+        el.style.lineHeight = "0";
+        const img = clonedDoc.createElement("img");
+        img.src = title.dataUrl;
+        img.width = title.width;
+        img.height = title.height;
+        img.style.display = "block";
+        el.appendChild(img);
+      } else {
+        // Fallback: solid on-brand fill if rasterization is unavailable.
+        el.style.webkitTextFillColor = "#f5c842";
+        el.style.color = "#f5c842";
+      }
     });
   }
 
