@@ -77,9 +77,114 @@
     return v || fallback;
   }
 
-  // Build the .title-word gradient (mirrors deck.css: 135deg cream→gold→pink)
-  // as a CanvasGradient mapped across the text's bounding box.
-  function makeTitleGradient(ctx, angleDeg, w, h) {
+  // Split a comma-separated CSS list at the top level only (commas inside
+  // rgb()/rgba()/hsl() parentheses are preserved).
+  function splitTopLevel(str) {
+    const parts = [];
+    let depth = 0;
+    let cur = "";
+    for (const ch of str) {
+      if (ch === "(") depth++;
+      else if (ch === ")") depth--;
+      if (ch === "," && depth === 0) {
+        parts.push(cur.trim());
+        cur = "";
+      } else {
+        cur += ch;
+      }
+    }
+    if (cur.trim()) parts.push(cur.trim());
+    return parts;
+  }
+
+  // Convert a CSS gradient direction keyword (e.g. "to bottom right") to the
+  // equivalent angle in degrees (0deg points up, matching CSS conventions).
+  function directionToAngle(dir) {
+    const d = dir.replace(/^to\s+/, "").trim();
+    const map = {
+      top: 0,
+      "top right": 45,
+      "right top": 45,
+      right: 90,
+      "bottom right": 135,
+      "right bottom": 135,
+      bottom: 180,
+      "bottom left": 225,
+      "left bottom": 225,
+      left: 270,
+      "top left": 315,
+      "left top": 315,
+    };
+    return map[d] != null ? map[d] : 135;
+  }
+
+  // Parse a computed `linear-gradient(...)` string into an angle (degrees) and
+  // an ordered list of { color, pos } stops (pos in 0..1, or null if implicit).
+  function parseLinearGradient(bg) {
+    if (!bg) return null;
+    const m = bg.match(/linear-gradient\(([\s\S]*)\)/i);
+    if (!m) return null;
+    const parts = splitTopLevel(m[1]);
+    if (!parts.length) return null;
+
+    let angleDeg = 180; // CSS default direction is "to bottom".
+    let startIdx = 0;
+    const first = parts[0];
+    if (/^to\s/i.test(first)) {
+      angleDeg = directionToAngle(first);
+      startIdx = 1;
+    } else if (/deg\s*$/i.test(first)) {
+      const a = parseFloat(first);
+      if (isFinite(a)) angleDeg = a;
+      startIdx = 1;
+    }
+
+    const stops = [];
+    for (let i = startIdx; i < parts.length; i++) {
+      const colorMatch = parts[i].match(
+        /(rgba?\([^)]*\)|hsla?\([^)]*\)|#[0-9a-fA-F]+|[a-zA-Z]+)/
+      );
+      if (!colorMatch) continue;
+      const posMatch = parts[i].match(/(-?[\d.]+)%/);
+      stops.push({
+        color: colorMatch[1],
+        pos: posMatch ? parseFloat(posMatch[1]) / 100 : null,
+      });
+    }
+    if (stops.length < 2) return null;
+
+    // Resolve implicit stop positions per the CSS spec: ends default to 0/1 and
+    // gaps are distributed evenly between defined positions.
+    if (stops[0].pos == null) stops[0].pos = 0;
+    if (stops[stops.length - 1].pos == null) stops[stops.length - 1].pos = 1;
+    let lastDefined = 0;
+    for (let i = 1; i < stops.length; i++) {
+      if (stops[i].pos != null) {
+        const gap = i - lastDefined;
+        for (let j = lastDefined + 1; j < i; j++) {
+          stops[j].pos =
+            stops[lastDefined].pos +
+            ((stops[i].pos - stops[lastDefined].pos) * (j - lastDefined)) / gap;
+        }
+        lastDefined = i;
+      }
+    }
+    // Clamp into 0..1 and keep monotonically non-decreasing for the canvas API.
+    let prev = 0;
+    for (const s of stops) {
+      s.pos = Math.min(1, Math.max(0, Math.max(prev, s.pos)));
+      prev = s.pos;
+    }
+    return { angleDeg, stops };
+  }
+
+  // Build the .title-word gradient as a CanvasGradient mapped across the text's
+  // bounding box. The gradient is derived from the element's computed
+  // `background-image` (the single source of truth in deck.css) so any change to
+  // the angle, stops, or colors there flows straight into the exported PDF.
+  function makeTitleGradient(ctx, backgroundImage, w, h) {
+    const parsed = parseLinearGradient(backgroundImage);
+    const angleDeg = parsed ? parsed.angleDeg : 135;
     const a = (angleDeg * Math.PI) / 180;
     const dx = Math.sin(a);
     const dy = -Math.cos(a);
@@ -92,9 +197,14 @@
       cx + (dx * len) / 2,
       cy + (dy * len) / 2
     );
-    g.addColorStop(0.25, "#f0ece4");
-    g.addColorStop(0.65, readCssVar("--accent-gold", "#f5c842"));
-    g.addColorStop(1, readCssVar("--accent-pink", "#f04e7a"));
+    if (parsed) {
+      for (const s of parsed.stops) g.addColorStop(s.pos, s.color);
+    } else {
+      // Fallback only if the computed gradient couldn't be parsed.
+      g.addColorStop(0.25, readCssVar("--text-primary", "#f0ece4"));
+      g.addColorStop(0.65, readCssVar("--accent-gold", "#f5c842"));
+      g.addColorStop(1, readCssVar("--accent-pink", "#f04e7a"));
+    }
     return g;
   }
 
@@ -131,7 +241,7 @@
       }
       ctx.textAlign = "left";
       ctx.textBaseline = "alphabetic";
-      ctx.fillStyle = makeTitleGradient(ctx, 135, logicalW, logicalH);
+      ctx.fillStyle = makeTitleGradient(ctx, font.backgroundImage, logicalW, logicalH);
       ctx.fillText(text, padX, padY + ascent);
 
       return { dataUrl: canvas.toDataURL("image/png"), width: logicalW, height: logicalH };
@@ -177,6 +287,7 @@
         fontWeight: cs.fontWeight || "800",
         fontFamily: cs.fontFamily || '"Space Grotesk", "Inter", sans-serif',
         letterSpacing,
+        backgroundImage: cs.backgroundImage,
       });
 
       el.style.background = "none";
