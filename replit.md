@@ -27,7 +27,12 @@ All adapters make real HTTP calls when their key is present, and degrade gracefu
 
 - The server binds to `0.0.0.0` and listens on port `5000` (overridable via `PORT`).
 - One workflow, "Start application", runs `npm run dev` (which runs `node server/index.js`) on port 5000.
-- No external dependencies to install; the app uses Node built-ins and a browser CDN for React.
+- The app runtime has no external dependencies; it uses Node built-ins and a browser CDN for React. The only package is a dev-only `playwright-core` used by the deck screenshot capture script.
+
+## Pitch Deck
+
+- `public/deck.html` is a standalone pitch deck. Slide 4 embeds a screenshot of the running player at `public/assets/player-ui.jpg`.
+- Regenerate that screenshot after any player UI change with `npm run capture:player` (script: `scripts/capture-player-ui.mjs`). It boots the server on an isolated port, waits for the episode to auto-build past the loader fade, and saves a 1280×720 retina JPEG using the Replit-provided Chromium via `playwright-core`. No browser download is needed.
 
 ## External Services (optional)
 
