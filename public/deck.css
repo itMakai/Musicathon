@@ -400,6 +400,14 @@ h1, h2, h4, p, ul { margin: 0; }
 }
 .hud-btn:hover:not(:disabled) { background: rgba(56,217,192,0.18); transform: translateY(-1px); }
 .hud-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.hud-btn--pdf {
+  margin-left: 6px;
+  font-size: 1.25rem;
+  border-color: rgba(245, 200, 66, 0.45);
+  background: rgba(245, 200, 66, 0.1);
+  color: var(--accent-gold);
+}
+.hud-btn--pdf:hover:not(:disabled) { background: rgba(245, 200, 66, 0.22); }
 .hud-counter {
   font-family: var(--font-display); font-weight: 700; font-size: 0.95rem;
   letter-spacing: 0.05em; min-width: 56px; text-align: center; color: var(--text-muted);
@@ -429,4 +437,55 @@ h1, h2, h4, p, ul { margin: 0; }
 @media (prefers-reduced-motion: reduce) {
   .slide, .slide.is-active * { transition: opacity 0.2s ease !important; animation: none !important; }
   .eq span, .onair-dot, .shot-disc { animation: none !important; }
+}
+
+/* ── PRINT / SAVE AS PDF ──────────────────────────────── */
+@media print {
+  @page { size: landscape; margin: 0; }
+
+  html, body {
+    height: auto;
+    background: var(--bg) !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Hide on-screen navigation chrome */
+  .hud, .progress-rail { display: none !important; }
+
+  /* Un-stack the deck: let slides flow as full pages */
+  .deck {
+    height: auto;
+    width: auto;
+    overflow: visible;
+    position: static;
+  }
+
+  .slide {
+    position: relative;
+    inset: auto;
+    width: 100%;
+    height: 100vh;
+    opacity: 1 !important;
+    visibility: visible !important;
+    transform: none !important;
+    overflow: hidden;
+    break-after: page;
+    page-break-after: always;
+    break-inside: avoid;
+    page-break-inside: avoid;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .slide:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  /* Freeze all motion so each page captures a settled frame */
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }

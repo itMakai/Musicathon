@@ -32,6 +32,11 @@
   prevBtn.addEventListener("click", () => go(index - 1));
   nextBtn.addEventListener("click", () => go(index + 1));
 
+  const downloadBtn = document.getElementById("download");
+  if (downloadBtn) {
+    downloadBtn.addEventListener("click", () => window.print());
+  }
+
   document.addEventListener("keydown", (e) => {
     switch (e.key) {
       case "ArrowRight":
