@@ -136,6 +136,44 @@ async function handleRequest(request, response) {
     return;
   }
 
+  // Convenience helper for automation tools (e.g. n8n → Spotify search):
+  // generates an episode and returns clean "Artist – Title" search strings.
+  if (request.method === "POST" && url.pathname === "/api/hypecast/playlist-terms") {
+    try {
+      if (isRateLimited(`playlist:${clientKey(request)}`, 6)) {
+        sendJson(response, 429, { error: "Too many playlist-terms requests. Please wait a moment." });
+        return;
+      }
+      const body = await readRequestBody(request);
+      const episode = await buildHypecast(body);
+      const artist = String(episode.artist || "").trim();
+      const tracks = (Array.isArray(episode.setlist) ? episode.setlist : [])
+        .map((track) => {
+          const title = String((track && track.title) || "").trim();
+          if (!title) return null;
+          return {
+            title,
+            artist,
+            term:  artist ? `${artist} \u2013 ${title}` : title,
+            query: [artist, title].filter(Boolean).join(" ")
+          };
+        })
+        .filter(Boolean);
+      sendJson(response, 200, {
+        artist,
+        city:  String(episode.city || "").trim(),
+        count: tracks.length,
+        terms: tracks.map((t) => t.term),
+        tracks
+      });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error.message || "Unable to build playlist terms."
+      });
+    }
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/api/narration") {
     try {
       if (isRateLimited(`narration:${clientKey(request)}`)) {

@@ -14,6 +14,7 @@ HypeCast is a React + Node.js prototype for a live music prep experience. A fan 
   - `POST /api/narration` — synthesizes the script as ElevenLabs audio (`{ script, voiceId? }` → `audio/mpeg`); returns 503 when ElevenLabs is unconfigured so the browser falls back to Web Speech. Rate-limited per client.
   - `POST /api/hookbed` — extracts a real instrumental "hook bed" for a track via LALAL.AI (`{ artist, title }` → audio); returns 503 when LALAL is unconfigured. Rate-limited per client; finished beds are cached in-memory.
   - `POST /api/track-analysis` — runs a track's iTunes preview through Cyanite.ai AI music analysis (`{ artist, title }` → JSON with mood/genre/energy/BPM/key/positivity); returns 503 when Cyanite is unconfigured. Rate-limited per client; finished analyses are cached in-memory.
+  - `POST /api/hypecast/playlist-terms` — convenience helper for automation tools (e.g. n8n → Spotify). Generates an episode from `{ city, artist }` and returns `{ artist, city, count, terms, tracks }`, where `terms` is an array of clean `"Artist – Title"` search strings and `tracks` carries `{ title, artist, term, query }` per song.
 
 ## Live Integrations
 
