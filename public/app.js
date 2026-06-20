@@ -778,17 +778,20 @@
         h("a", {
           className: "listen-btn spotify",
           href: `https://open.spotify.com/search/${encodeURIComponent(`${artist} ${track.title}`)}`,
-          target: "_blank", rel: "noopener noreferrer"
+          target: "_blank", rel: "noopener noreferrer",
+          "aria-label": `Listen to ${track.title} on Spotify`
         }, "Spotify"),
         h("a", {
           className: "listen-btn apple",
           href: `https://music.apple.com/search?term=${encodeURIComponent(`${artist} ${track.title}`)}`,
-          target: "_blank", rel: "noopener noreferrer"
+          target: "_blank", rel: "noopener noreferrer",
+          "aria-label": `Listen to ${track.title} on Apple Music`
         }, "Apple Music"),
         h("a", {
           className: "listen-btn youtube",
           href: `https://music.youtube.com/search?q=${encodeURIComponent(`${artist} ${track.title}`)}`,
-          target: "_blank", rel: "noopener noreferrer"
+          target: "_blank", rel: "noopener noreferrer",
+          "aria-label": `Listen to ${track.title} on YouTube Music`
         }, "YouTube Music")
       ),
 
