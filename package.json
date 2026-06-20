@@ -6,8 +6,7 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node server/index.js",
-    "check": "node --check server/index.js && node --check server/hypecastEngine.js && node --check server/serviceAdapters.js",
-    "capture:player": "node scripts/capture-player-ui.mjs"
+    "check": "node --check server/index.js && node --check server/hypecastEngine.js && node --check server/serviceAdapters.js"
   },
   "keywords": [
     "react",
@@ -16,8 +15,5 @@
     "hackathon"
   ],
   "author": "",
-  "license": "MIT",
-  "devDependencies": {
-    "playwright-core": "^1.61.0"
-  }
+  "license": "MIT"
 }
