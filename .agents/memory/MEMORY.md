@@ -1,3 +1,1 @@
-- [Songstats API contract](songstats-api.md) — top_tracks is progressive: 200 with no tracks means you owe more params (source+metric+scope); records nested at data[].top_tracks.
-- [LALAL.AI pipeline](lalal-api.md) — upload→split(stem:vocals)→check(id as plain string)→download back_track (the instrumental "no_vocals" stem); auth is `license <key>`.
-- [Upstream error leakage](upstream-error-leakage.md) — never put a raw upstream response body in a client-facing field; some APIs (JamBase) echo your API key in errors.
+- [Cyanite needs MP3, iTunes is AAC](cyanite-itunes-mp3.md) — transcode iTunes preview audio to MP3 via ffmpeg before uploading to Cyanite.ai.

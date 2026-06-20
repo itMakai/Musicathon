@@ -2,7 +2,7 @@ const http = require("node:http");
 const path = require("node:path");
 const { promises: fs } = require("node:fs");
 const { buildHypecast } = require("./hypecastEngine");
-const { synthesizeNarration, extractHookBed } = require("./serviceAdapters");
+const { synthesizeNarration, extractHookBed, analyzeTrackVibe } = require("./serviceAdapters");
 
 const HOST = "0.0.0.0";
 const START_PORT = Number.parseInt(process.env.PORT || "5000", 10);
@@ -195,6 +195,31 @@ async function handleRequest(request, response) {
       response.end(bed.buffer);
     } catch (error) {
       sendJson(response, 502, { error: error.message || "Hook extraction failed." });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/track-analysis") {
+    try {
+      if (isRateLimited(`vibe:${clientKey(request)}`, 6)) {
+        sendJson(response, 429, { error: "Too many analysis requests. Please wait a moment." });
+        return;
+      }
+      const body = await readRequestBody(request);
+      const artist = String(body.artist || "").trim();
+      const title  = String(body.title  || "").trim();
+      if (!artist || !title) {
+        sendJson(response, 400, { error: "artist and title are required." });
+        return;
+      }
+      const vibe = await analyzeTrackVibe({ artist, title });
+      if (!vibe) {
+        sendJson(response, 503, { error: "Cyanite.ai music analysis is not configured." });
+        return;
+      }
+      sendJson(response, 200, vibe);
+    } catch (error) {
+      sendJson(response, 502, { error: error.message || "Music analysis failed." });
     }
     return;
   }

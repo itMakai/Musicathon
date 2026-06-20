@@ -13,6 +13,7 @@ HypeCast is a React + Node.js prototype for a live music prep experience. A fan 
   - `POST /api/hypecast` — generates a HypeCast episode from `{ city, artist }`.
   - `POST /api/narration` — synthesizes the script as ElevenLabs audio (`{ script, voiceId? }` → `audio/mpeg`); returns 503 when ElevenLabs is unconfigured so the browser falls back to Web Speech. Rate-limited per client.
   - `POST /api/hookbed` — extracts a real instrumental "hook bed" for a track via LALAL.AI (`{ artist, title }` → audio); returns 503 when LALAL is unconfigured. Rate-limited per client; finished beds are cached in-memory.
+  - `POST /api/track-analysis` — runs a track's iTunes preview through Cyanite.ai AI music analysis (`{ artist, title }` → JSON with mood/genre/energy/BPM/key/positivity); returns 503 when Cyanite is unconfigured. Rate-limited per client; finished analyses are cached in-memory.
 
 ## Live Integrations
 
@@ -22,6 +23,7 @@ All adapters make real HTTP calls when their key is present, and degrade gracefu
 - **JamBase** (`apikey` query) — fetches the soonest upcoming event for the artist/city. Upstream errors are logged server-side only (never surfaced to the client, since the body echoes the key).
 - **LALAL.AI** (`Authorization: license <key>`) — separates the vocals from a track's iTunes preview and serves the instrumental "no_vocals" stem as the podcast's background music bed. The browser layers it under the narration (with a synthesized bed as the instant fallback while LALAL processes).
 - **ElevenLabs** (`xi-api-key` header) — text-to-speech for the narrated script.
+- **Cyanite.ai** (`Authorization: Bearer <key>`, GraphQL) — on-demand AI music analysis. Per track, the server uploads the iTunes preview (`fileUploadRequest` → PUT to the presigned URL → `libraryTrackCreate`), polls `audioAnalysisV7` until finished, and returns mood/genre/energy/BPM/key/positivity tags. Surfaced via the per-track "Analyze Vibe" button. Errors are logged server-side; the access token is never echoed to the client.
 
 ## Replit Environment
 
@@ -32,7 +34,7 @@ All adapters make real HTTP calls when their key is present, and degrade gracefu
 ## External Services (optional)
 
 The app runs with demo fallbacks when API keys are absent. Configure keys via Replit Secrets / environment variables (see `.env.example`):
-`JAMBASE_API_KEY`, `MUSIXMATCH_API_KEY`, `LALAL_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`.
+`JAMBASE_API_KEY`, `MUSIXMATCH_API_KEY`, `LALAL_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `CYANITE_API_KEY`.
 
 ## Deployment
 

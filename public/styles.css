@@ -1462,3 +1462,72 @@ input:focus {
     width: calc(100% - 24px);
   }
 }
+
+/* ── CYANITE AI VIBE PANEL ───────────────────────────── */
+.vibe-btn { display: inline-flex; align-items: center; gap: 4px; }
+
+.vibe-panel {
+  margin: 14px 0 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(95, 180, 255, 0.06);
+}
+
+.vibe-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.vibe-badge {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-blue);
+}
+
+.vibe-stat {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.vibe-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.vibe-chip {
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-bright);
+}
+
+.vibe-chip.mood {
+  background: rgba(56, 217, 192, 0.08);
+}
+
+.vibe-chip.genre {
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.vibe-error {
+  margin: 10px 0 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent-pink);
+}

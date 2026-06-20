@@ -4,7 +4,8 @@ const {
   fetchUpcomingConcert,
   fetchSongstatsTopTracks,
   getArtistProfile,
-  prepareVoiceNarration
+  prepareVoiceNarration,
+  describeMusicAnalysis
 } = require("./serviceAdapters");
 
 /* Generic setlist scaffolding used when Songstats supplies real top tracks
@@ -275,6 +276,7 @@ async function buildHypecast(payload) {
   const chapters = buildChapters({ artist, city, show, insights, hooks, vibe });
   const script   = buildScript({ artist, city, show, profile, insights, hooks, vibe });
   const voice    = await prepareVoiceNarration({ script });
+  const music    = await describeMusicAnalysis();
 
   return {
     id:                     `hype_${Date.now().toString(36)}`,
@@ -327,7 +329,8 @@ async function buildHypecast(payload) {
       songstats:  { source: songstats.source, status: songstats.status },
       musixmatch: { source: insights.source,  status: insights.status },
       lalal:      { source: hooks.source,     status: hooks.status },
-      elevenlabs: { source: voice.source,     status: voice.status }
+      elevenlabs: { source: voice.source,     status: voice.status },
+      cyanite:    { source: music.source,     status: music.status, available: music.available }
     },
     voice
   };

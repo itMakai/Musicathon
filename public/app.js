@@ -455,7 +455,8 @@
       ["Songstats",  episode.services.songstats],
       ["Musixmatch", episode.services.musixmatch],
       ["LALAL.AI",   episode.services.lalal],
-      ["ElevenLabs", episode.services.elevenlabs]
+      ["ElevenLabs", episode.services.elevenlabs],
+      ["Cyanite",    episode.services.cyanite]
     ].filter(([, svc]) => svc);
 
     const moodGradient = useMemo(() => cssGradient(episode.palette), [episode.palette]);
@@ -680,9 +681,29 @@
   }
 
   /* ─── LyricCard  (one per track, full-width) ───────── */
-  function LyricCard({ track, index, palette, onDrill }) {
+  function LyricCard({ track, index, palette, onDrill, artist, cyaniteLive }) {
     const [view, setView] = useState(track.chorus ? "chorus" : "none"); // none | chorus | full
+    const [vibe,      setVibe]      = useState(null);
+    const [vibeState, setVibeState] = useState("idle");   // idle | loading | done | error
+    const [vibeErr,   setVibeErr]   = useState("");
     const color = palette ? palette[index % palette.length] : "#38d9c0";
+
+    async function analyzeVibe() {
+      if (vibeState === "loading") return;
+      setVibeState("loading"); setVibeErr("");
+      try {
+        const res = await fetch("/api/track-analysis", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ artist, title: track.title })
+        });
+        const payload = await res.json();
+        if (!res.ok) throw new Error(payload.error || "Analysis failed.");
+        setVibe(payload); setVibeState("done");
+      } catch (e) {
+        setVibeErr(e.message); setVibeState("error");
+      }
+    }
     const isLive = track.lyricsSource && track.lyricsSource !== "unavailable" && track.lyricsSource !== "error";
     const hasLyrics = Boolean(track.chorus || track.fullLyrics);
 
@@ -715,6 +736,12 @@
             style: view === "full" ? { borderColor: color, color } : {},
             onClick: () => setView(v => v === "full" ? "none" : "full")
           }, view === "full" ? "▲ Full Lyrics" : "▼ Full Lyrics"),
+          cyaniteLive && h("button", {
+            type: "button", className: `lyric-view-btn vibe-btn${vibeState === "done" ? " active" : ""}`,
+            style: vibeState === "done" ? { borderColor: color, color } : {},
+            onClick: analyzeVibe,
+            disabled: vibeState === "loading"
+          }, vibeState === "loading" ? "🧠 Analyzing…" : vibeState === "done" ? "🧠 Vibe ✓" : "🧠 Analyze Vibe"),
           h("button", {
             type: "button", className: "lyric-drill-btn",
             style: { background: color },
@@ -743,6 +770,24 @@
         track.chartPosition && h("span", { className: "lyrics-source-badge" }, `📈 #${track.chartPosition} Spotify`),
         !track.chartPosition && track.streamsLabel && h("span", { className: "lyrics-source-badge" }, `▶ ${track.streamsLabel} streams`)
       ),
+
+      // Cyanite AI vibe panel
+      vibeState === "done" && vibe && h("div", { className: "vibe-panel", style: { "--card-accent": color } },
+        h("div", { className: "vibe-panel-head" },
+          h("span", { className: "vibe-badge" }, "🧠 Cyanite AI"),
+          vibe.bpm != null && h("span", { className: "vibe-stat" }, `${vibe.bpm} BPM`),
+          vibe.key && h("span", { className: "vibe-stat" }, vibe.key),
+          vibe.energy && h("span", { className: "vibe-stat" }, `${vibe.energy} energy`),
+          vibe.valence != null && h("span", { className: "vibe-stat" }, `${vibe.valence}% positivity`)
+        ),
+        vibe.moods && vibe.moods.length > 0 && h("div", { className: "vibe-chips" },
+          vibe.moods.map(m => h("span", { key: m, className: "vibe-chip mood", style: { borderColor: color, color } }, m))
+        ),
+        (vibe.genres || []).concat(vibe.subgenres || []).length > 0 && h("div", { className: "vibe-chips" },
+          (vibe.genres || []).concat(vibe.subgenres || []).map(g => h("span", { key: g, className: "vibe-chip genre" }, g))
+        )
+      ),
+      vibeState === "error" && h("p", { className: "vibe-error" }, "⚠ " + vibeErr),
 
       // Lyrics display
       displayedLyrics && h("div", { className: "lyric-body" },
@@ -808,7 +853,9 @@
             track,
             index:  i,
             palette: episode.palette,
-            onDrill: playCue
+            onDrill: playCue,
+            artist:  episode.artist,
+            cyaniteLive: Boolean(episode.services.cyanite && episode.services.cyanite.status === "live")
           })
         )
       )
@@ -842,7 +889,7 @@
   function AppFooter() {
     return h("footer", { className: "app-footer" },
       h("span", null, "Powered by"),
-      ["JamBase", "Songstats", "Musixmatch", "LALAL.AI", "ElevenLabs"].map(t =>
+      ["JamBase", "Songstats", "Musixmatch", "LALAL.AI", "ElevenLabs", "Cyanite"].map(t =>
         h("span", { key: t, className: "tech-tag" }, t)
       ),
       h("span", null, "· HypeCast © 2026")

@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 const https  = require("node:https");
 const http   = require("node:http");
+const { spawn } = require("node:child_process");
 
 /* ─────────────────────────────────────────────────────────
    ARTIST PROFILES
@@ -1301,6 +1302,257 @@ async function synthesizeNarration({ script, voiceId }) {
   });
 }
 
+/* ─────────────────────────────────────────────────────────
+   CYANITE.AI  (real AI music analysis → mood / genre / energy /
+   BPM / key / positivity). GraphQL endpoint, Bearer auth.
+   Flow: fileUploadRequest → PUT the mp3 to the presigned uploadUrl
+   → libraryTrackCreate (auto-enqueues analysis) → poll
+   libraryTrack.audioAnalysisV7 until Finished → read result tags.
+   Docs: https://api-docs.cyanite.ai
+───────────────────────────────────────────────────────── */
+const CYANITE_ENDPOINT = "https://api.cyanite.ai/graphql";
+
+/**
+ * Sends a GraphQL operation to Cyanite. Resolves to `data` or rejects
+ * with the first GraphQL error message (never echoes the access token).
+ */
+function cyaniteGraphql(query, variables = {}, { timeout = 20000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify({ query, variables });
+    const u = new URL(CYANITE_ENDPOINT);
+    const req = https.request({
+      hostname: u.hostname,
+      path:     u.pathname,
+      method:   "POST",
+      headers: {
+        "Content-Type":   "application/json",
+        "Content-Length": Buffer.byteLength(payload),
+        "Authorization":  `Bearer ${process.env.CYANITE_API_KEY || ""}`
+      },
+      timeout
+    }, (res) => {
+      let raw = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => { raw += c; });
+      res.on("end", () => {
+        let json;
+        try { json = JSON.parse(raw); }
+        catch (e) { reject(new Error(`Cyanite invalid JSON: ${raw.slice(0, 120)}`)); return; }
+        if (json.errors && json.errors.length) {
+          reject(new Error(json.errors[0].message || "Cyanite GraphQL error"));
+          return;
+        }
+        resolve(json.data);
+      });
+    });
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(); reject(new Error("Cyanite timeout")); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+/**
+ * PUTs a binary buffer to a presigned URL (Cyanite's S3 upload slot).
+ * Resolves on any 2xx response.
+ */
+function putBuffer(url, buffer, { contentType = "audio/mpeg", timeout = 30000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const u   = new URL(url);
+    const lib = u.protocol === "https:" ? https : http;
+    const req = lib.request({
+      hostname: u.hostname,
+      port:     u.port || undefined,
+      path:     u.pathname + u.search,
+      method:   "PUT",
+      headers:  { "Content-Type": contentType, "Content-Length": buffer.length },
+      timeout
+    }, (res) => {
+      res.resume();
+      res.on("end", () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) resolve(true);
+        else reject(new Error(`Cyanite upload HTTP ${res.statusCode}`));
+      });
+    });
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(); reject(new Error("Cyanite upload timeout")); });
+    req.write(buffer);
+    req.end();
+  });
+}
+
+/**
+ * Transcodes an arbitrary audio buffer to a real MP3 via ffmpeg (piped,
+ * no temp files). iTunes previews are AAC/.m4a, but Cyanite ingests MP3,
+ * so this guarantees the uploaded bytes match the forced audio/mpeg type.
+ */
+function transcodeToMp3(inputBuffer, { timeout = 30000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const ff = spawn("ffmpeg", ["-i", "pipe:0", "-vn", "-f", "mp3", "-ab", "192k", "pipe:1"], {
+      stdio: ["pipe", "pipe", "ignore"]
+    });
+    const chunks = [];
+    let settled = false;
+    const finish = (fn, arg) => { if (!settled) { settled = true; clearTimeout(timer); fn(arg); } };
+    const timer = setTimeout(() => {
+      try { ff.kill("SIGKILL"); } catch (_) {}
+      finish(reject, new Error("Audio transcode timed out"));
+    }, timeout);
+
+    ff.stdout.on("data", (c) => chunks.push(c));
+    ff.on("error", (e) => finish(reject, new Error(`ffmpeg unavailable: ${e.message}`)));
+    ff.on("close", (code) => {
+      if (code === 0 && chunks.length) finish(resolve, Buffer.concat(chunks));
+      else finish(reject, new Error(`Audio transcode failed (ffmpeg exit ${code})`));
+    });
+    ff.stdin.on("error", () => {});   // ignore EPIPE if ffmpeg exits early
+    ff.stdin.write(inputBuffer);
+    ff.stdin.end();
+  });
+}
+
+/** Pretty-print an enum tag, e.g. "hip_hop" / "uplifting" → "Hip Hop". */
+function prettyTag(tag) {
+  return String(tag || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim();
+}
+
+/** Format a MusicalKey enum (e.g. "cSharpMinor") into "C♯ Minor". */
+function formatMusicalKey(key) {
+  if (!key) return null;
+  const m = String(key).match(/^([a-g])(sharp|flat)?(major|minor)?$/i);
+  if (!m) return prettyTag(key);
+  const note = m[1].toUpperCase();
+  const acc  = m[2] ? (m[2].toLowerCase() === "sharp" ? "♯" : "♭") : "";
+  const mode = m[3] ? (m[3].toLowerCase() === "minor" ? " Minor" : " Major") : "";
+  return `${note}${acc}${mode}`;
+}
+
+// In-memory cache of finished analyses (Cyanite is paid + slow per track).
+const vibeCache    = new Map();
+const VIBE_CACHE_MAX = 60;
+
+/**
+ * Real Cyanite.ai pipeline: takes a track's iTunes preview, uploads it,
+ * runs AudioAnalysisV7, and returns the AI-derived musical "vibe".
+ * Resolves to a vibe object, or null when no key is configured.
+ * Throws (with a safe message) when no preview exists or analysis fails.
+ * Cached per artist|title so repeat requests don't re-spend the quota.
+ */
+async function analyzeTrackVibe({ artist, title }) {
+  if (!process.env.CYANITE_API_KEY) return null;
+
+  const cacheKey = `${normalizeKey(artist)}|${normalizeKey(title)}`;
+  if (vibeCache.has(cacheKey)) return vibeCache.get(cacheKey);
+
+  // 1. Real audio source — the artist's own iTunes preview.
+  const preview = await fetchiTunesPreview(artist, title);
+  if (!preview || !preview.previewUrl) {
+    throw new Error("No audio preview is available for this track.");
+  }
+  const audio = await downloadBuffer(preview.previewUrl, { timeout: 20000 });
+
+  // 1b. iTunes previews are AAC/.m4a — transcode to real MP3 for Cyanite.
+  const mp3 = await transcodeToMp3(audio.buffer);
+
+  // 2. Request an upload slot.
+  const reqData   = await cyaniteGraphql(`mutation { fileUploadRequest { id uploadUrl } }`);
+  const uploadId  = reqData && reqData.fileUploadRequest && reqData.fileUploadRequest.id;
+  const uploadUrl = reqData && reqData.fileUploadRequest && reqData.fileUploadRequest.uploadUrl;
+  if (!uploadId || !uploadUrl) throw new Error("Cyanite upload request failed");
+
+  // 3. Upload the mp3 bytes to the presigned URL.
+  await putBuffer(uploadUrl, mp3, { contentType: "audio/mpeg" });
+
+  // 4. Create the library track (this auto-enqueues all analyses).
+  const created = await cyaniteGraphql(
+    `mutation CreateTrack($input: LibraryTrackCreateInput!) {
+       libraryTrackCreate(input: $input) {
+         __typename
+         ... on LibraryTrackCreateSuccess { createdLibraryTrack { id } }
+         ... on LibraryTrackCreateError { code message }
+       }
+     }`,
+    { input: { uploadId, title: `${preview.artistName || artist} - ${preview.trackName || title}`.slice(0, 150) } }
+  );
+  const cr = created && created.libraryTrackCreate;
+  if (!cr || cr.__typename !== "LibraryTrackCreateSuccess") {
+    throw new Error(cr && cr.message ? cr.message : "Cyanite track creation failed");
+  }
+  const trackId = cr.createdLibraryTrack.id;
+
+  // 5. Poll until the AudioAnalysisV7 result is ready.
+  const resultQuery =
+    `query Analysis($id: ID!) {
+       libraryTrack(id: $id) {
+         __typename
+         ... on LibraryTrack {
+           audioAnalysisV7 {
+             __typename
+             ... on AudioAnalysisV7Finished {
+               result {
+                 moodTags
+                 genreTags
+                 subgenreTags
+                 energyLevel
+                 valence
+                 bpmPrediction { value }
+                 keyPrediction { value }
+               }
+             }
+           }
+         }
+       }
+     }`;
+
+  let result = null;
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const data = await cyaniteGraphql(resultQuery, { id: trackId });
+    const lt   = data && data.libraryTrack;
+    const aa   = lt && lt.audioAnalysisV7;
+    if (!aa) continue;
+    if (aa.__typename === "AudioAnalysisV7Finished") { result = aa.result; break; }
+    if (aa.__typename === "AudioAnalysisV7Failed")   throw new Error("Cyanite analysis failed");
+  }
+  if (!result) throw new Error("Cyanite analysis timed out");
+
+  const vibe = {
+    status:    "live",
+    source:    "Cyanite.ai AI music analysis",
+    track:     preview.trackName  || title,
+    artist:    preview.artistName || artist,
+    moods:     (result.moodTags     || []).slice(0, 4).map(prettyTag),
+    genres:    (result.genreTags    || []).slice(0, 3).map(prettyTag),
+    subgenres: (result.subgenreTags || []).slice(0, 2).map(prettyTag),
+    energy:    result.energyLevel ? prettyTag(result.energyLevel) : null,
+    valence:   typeof result.valence === "number" ? Math.round(result.valence * 100) : null,
+    bpm:       result.bpmPrediction && result.bpmPrediction.value ? Math.round(result.bpmPrediction.value) : null,
+    key:       result.keyPrediction && result.keyPrediction.value ? formatMusicalKey(result.keyPrediction.value) : null
+  };
+
+  if (vibeCache.size >= VIBE_CACHE_MAX) vibeCache.delete(vibeCache.keys().next().value);
+  vibeCache.set(cacheKey, vibe);
+  return vibe;
+}
+
+/**
+ * Reports Cyanite availability for the episode payload. The actual
+ * per-track analysis is produced on demand via the /api/track-analysis
+ * endpoint; this just surfaces the service status pill.
+ */
+async function describeMusicAnalysis() {
+  const live = Boolean(process.env.CYANITE_API_KEY);
+  return {
+    source:    live ? "Cyanite.ai live AI music analysis" : "Cyanite.ai demo fallback",
+    status:    live ? "live" : "demo",
+    available: live
+  };
+}
+
 module.exports = {
   getArtistProfile,
   fetchUpcomingConcert,
@@ -1309,5 +1561,7 @@ module.exports = {
   extractInstrumentalHooks,
   extractHookBed,
   prepareVoiceNarration,
-  synthesizeNarration
+  synthesizeNarration,
+  analyzeTrackVibe,
+  describeMusicAnalysis
 };
