@@ -1531,3 +1531,38 @@ input:focus {
   font-weight: 600;
   color: var(--accent-pink);
 }
+
+/* ── Listen-on links (open track in user's own music app/account) ── */
+.listen-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.listen-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  font-weight: 700;
+  margin-right: 2px;
+}
+.listen-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-decoration: none;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+.listen-btn:hover { transform: translateY(-1px); }
+.listen-btn.spotify:hover { background: rgba(29, 185, 84, 0.18); border-color: #1db954; color: #1ed760; }
+.listen-btn.apple:hover   { background: rgba(250, 45, 72, 0.18); border-color: #fa2d48; color: #ff6b81; }
+.listen-btn.youtube:hover { background: rgba(255, 0, 0, 0.16);  border-color: #ff4e45; color: #ff6b6b; }

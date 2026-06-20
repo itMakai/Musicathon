@@ -771,6 +771,27 @@
         !track.chartPosition && track.streamsLabel && h("span", { className: "lyrics-source-badge" }, `▶ ${track.streamsLabel} streams`)
       ),
 
+      // Listen in your own music app — opens the track in the user's
+      // already-logged-in Spotify / Apple Music / YouTube Music account.
+      h("div", { className: "listen-row" },
+        h("span", { className: "listen-label" }, "🎧 Listen on"),
+        h("a", {
+          className: "listen-btn spotify",
+          href: `https://open.spotify.com/search/${encodeURIComponent(`${artist} ${track.title}`)}`,
+          target: "_blank", rel: "noopener noreferrer"
+        }, "Spotify"),
+        h("a", {
+          className: "listen-btn apple",
+          href: `https://music.apple.com/search?term=${encodeURIComponent(`${artist} ${track.title}`)}`,
+          target: "_blank", rel: "noopener noreferrer"
+        }, "Apple Music"),
+        h("a", {
+          className: "listen-btn youtube",
+          href: `https://music.youtube.com/search?q=${encodeURIComponent(`${artist} ${track.title}`)}`,
+          target: "_blank", rel: "noopener noreferrer"
+        }, "YouTube Music")
+      ),
+
       // Cyanite AI vibe panel
       vibeState === "done" && vibe && h("div", { className: "vibe-panel", style: { "--card-accent": color } },
         h("div", { className: "vibe-panel-head" },
