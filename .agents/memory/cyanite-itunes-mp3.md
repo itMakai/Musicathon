@@ -15,3 +15,11 @@ MP3. iTunes `previewUrl` files are AAC in an `.m4a` container (HTTP
 **How to apply:** Transcode the downloaded preview buffer to MP3 with ffmpeg
 (piped, `-f mp3`) before the presigned PUT. ffmpeg is available in this Repl.
 A valid MP3 starts with the ASCII bytes `ID3` (`0x494433`) — useful smoke check.
+
+## Cyanite auth + intermittent 5xx
+- Auth header is `Authorization: Bearer <token>`. A valid token is a long
+  JWT (3 dot-separated segments, ~335 chars), NOT a short hex string — a
+  short token returns HTTP 200 with GraphQL `ERR_NOT_AUTHORIZED`.
+- `fileUploadRequest` intermittently returns HTTP 500 ("Internal Server
+  Error", non-JSON body). Retry transient 5xx / non-JSON / network failures
+  with backoff; GraphQL-level errors (200 + `errors[]`) are not retryable.

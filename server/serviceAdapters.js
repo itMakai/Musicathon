@@ -1313,11 +1313,14 @@ async function synthesizeNarration({ script, voiceId }) {
 const CYANITE_ENDPOINT = "https://api.cyanite.ai/graphql";
 
 /**
- * Sends a GraphQL operation to Cyanite. Resolves to `data` or rejects
- * with the first GraphQL error message (never echoes the access token).
+ * One GraphQL round-trip to Cyanite. Resolves `data`, or rejects with an
+ * Error tagged `.transient = true` for retryable upstream failures (HTTP
+ * 5xx, non-JSON bodies, network/timeout). GraphQL-level errors reject
+ * without the transient flag. Never echoes the access token.
  */
-function cyaniteGraphql(query, variables = {}, { timeout = 20000 } = {}) {
+function cyaniteGraphqlOnce(query, variables, timeout) {
   return new Promise((resolve, reject) => {
+    const transient = (msg) => Object.assign(new Error(msg), { transient: true });
     const payload = JSON.stringify({ query, variables });
     const u = new URL(CYANITE_ENDPOINT);
     const req = https.request({
@@ -1335,9 +1338,10 @@ function cyaniteGraphql(query, variables = {}, { timeout = 20000 } = {}) {
       res.setEncoding("utf8");
       res.on("data", (c) => { raw += c; });
       res.on("end", () => {
+        if (res.statusCode >= 500) { reject(transient(`Cyanite HTTP ${res.statusCode}`)); return; }
         let json;
         try { json = JSON.parse(raw); }
-        catch (e) { reject(new Error(`Cyanite invalid JSON: ${raw.slice(0, 120)}`)); return; }
+        catch (e) { reject(transient(`Cyanite invalid JSON: ${raw.slice(0, 120)}`)); return; }
         if (json.errors && json.errors.length) {
           reject(new Error(json.errors[0].message || "Cyanite GraphQL error"));
           return;
@@ -1345,11 +1349,30 @@ function cyaniteGraphql(query, variables = {}, { timeout = 20000 } = {}) {
         resolve(json.data);
       });
     });
-    req.on("error", reject);
-    req.on("timeout", () => { req.destroy(); reject(new Error("Cyanite timeout")); });
+    req.on("error", (e) => reject(transient(e.message)));
+    req.on("timeout", () => { req.destroy(); reject(transient("Cyanite timeout")); });
     req.write(payload);
     req.end();
   });
+}
+
+/**
+ * Sends a GraphQL operation to Cyanite, retrying transient upstream
+ * failures (Cyanite's `fileUploadRequest` intermittently 500s) with
+ * backoff. Resolves to `data` or rejects with a safe error message.
+ */
+async function cyaniteGraphql(query, variables = {}, { timeout = 20000, retries = 3 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await cyaniteGraphqlOnce(query, variables, timeout);
+    } catch (err) {
+      lastErr = err;
+      if (!err.transient || attempt === retries) throw err;
+      await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
 }
 
 /**
