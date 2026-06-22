@@ -627,7 +627,7 @@ async function fetchUpcomingConcert({ artist, city }) {
 /* ─────────────────────────────────────────────────────────
    LYRICS ENGINE
    Primary:  lyrics.ovh  (free, no auth)
-   Fallback: lrclib.net  (free, no auth, synced + plain)
+   Fallback: lrclib.net  (free, no auth, plain text)
 ───────────────────────────────────────────────────────── */
 
 /**
@@ -1055,8 +1055,9 @@ async function fetchMusixmatchLyrics(artist, title) {
 }
 
 /**
- * Try lyrics.ovh first, then lrclib.net as fallback.
- * Returns { text, source } or { text: null, source: "unavailable" }.
+ * Resolve lyrics: Musixmatch first (Catalog + Lyrics + Lyrics-Sync), then
+ * lyrics.ovh, then lrclib.net — the latter two are plain-text fallbacks only.
+ * Returns { text, source, ... } or { text: null, source: "unavailable" }.
  */
 async function fetchRawLyrics(artist, title) {
   const encArtist = encodeURIComponent(artist);
@@ -1082,75 +1083,23 @@ async function fetchRawLyrics(artist, title) {
     } catch (_) { /* fall through */ }
   }
 
-  // ── Strategy 2: lrclib.net (also returns free synced lyrics) ──
+  // ── Strategy 2: lrclib.net (plain-text fallback only) ──
   if (!result) {
     try {
       const data = await httpGetJson(
         `https://lrclib.net/api/get?artist_name=${encArtist}&track_name=${encTitle}`
       );
-      const synced = data && typeof data.syncedLyrics === "string"
-        ? parseLrc(data.syncedLyrics)
-        : null;
       const plain = data && (data.plainLyrics || data.syncedLyrics);
       if (typeof plain === "string" && plain.trim().length > 30) {
         const cleaned = plain.replace(/\[\d+:\d+\.\d+\]/g, "").trim();
-        result = {
-          text:   cleaned,
-          source: synced && synced.length ? "lrclib.net (synced)" : "lrclib.net",
-          synced: synced && synced.length ? synced : null,
-          syncedSource: synced && synced.length ? "lrclib" : null
-        };
+        result = { text: cleaned, source: "lrclib.net" };
       }
     } catch (_) { /* fall through */ }
   }
 
   if (!result) return { text: null, source: "unavailable" };
 
-  // ── Lyrics-Sync supplement ─────────────────────────
-  // Musixmatch synced subtitles need a commercial plan; when the chosen
-  // source has plain text but no time-alignment, borrow lrclib's free
-  // synced lyrics so the karaoke view still works.
-  if (!result.synced) {
-    try {
-      const syn = await fetchLrclibSynced(artist, title);
-      if (syn && syn.length) {
-        result.synced = syn;
-        result.syncedSource = "lrclib";
-        if (!/synced/i.test(result.source)) result.source = `${result.source} + lrclib sync`;
-      }
-    } catch (_) { /* ignore — plain lyrics still returned */ }
-  }
-
   return result;
-}
-
-/**
- * Fetch only the time-aligned (LRC) lyrics for a track from lrclib.net.
- * Returns [{ time, text }] sorted by time, or null.
- */
-async function fetchLrclibSynced(artist, title) {
-  const data = await httpGetJson(
-    `https://lrclib.net/api/get?artist_name=${encodeURIComponent(artist)}&track_name=${encodeURIComponent(title)}`
-  );
-  if (!data || typeof data.syncedLyrics !== "string") return null;
-  const lines = parseLrc(data.syncedLyrics);
-  return lines.length ? lines : null;
-}
-
-/**
- * Parse LRC-format synced lyrics ("[mm:ss.xx] text") into [{ time, text }]
- * sorted by time. Returns [] when nothing parses.
- */
-function parseLrc(lrc) {
-  const out = [];
-  for (const line of String(lrc).split("\n")) {
-    const m = /^\s*\[(\d+):(\d+(?:\.\d+)?)\]\s?(.*)$/.exec(line);
-    if (!m) continue;
-    const time = parseInt(m[1], 10) * 60 + parseFloat(m[2]);
-    const text = m[3].trim();
-    if (text) out.push({ time, text });
-  }
-  return out.sort((a, b) => a.time - b.time);
 }
 
 /**

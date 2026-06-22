@@ -680,7 +680,7 @@
     );
   }
 
-  /* ─── SyncedLyrics  (Musixmatch / lrclib Lyrics-Sync) ── */
+  /* ─── SyncedLyrics  (Musixmatch Lyrics-Sync) ── */
   // Time-aligned lyrics ([{ time, text }]). The iTunes preview is only a
   // 30s mid-song clip, so we drive the karaoke highlight from the real
   // synced timestamps on their own clock rather than the preview audio.
