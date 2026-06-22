@@ -300,6 +300,8 @@ async function buildHypecast(payload) {
         weight:          track.singalongWeight,
         chorus:          track.chorus          || null,
         fullLyrics:      track.fullLyrics      || null,
+        syncedLyrics:    track.syncedLyrics    || null,
+        lyricsMeta:      track.lyricsMeta      || null,
         lyricsSource:    track.lyricsSource    || "unavailable",
         lyricsCopyright: track.lyricsCopyright || null,
         preview:         track.preview         || null,

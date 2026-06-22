@@ -876,39 +876,181 @@ async function fetchSongstatsTopTracks({ artist }) {
 }
 
 /* ─────────────────────────────────────────────────────────
-   MUSIXMATCH  (real lyrics via matcher.lyrics.get)
+   MUSIXMATCH
    Docs: https://api.musixmatch.com/ws/1.1  ·  apikey query param
+   Surfaces used:
+     • Catalog      — matcher.track.get  → canonical track id + metadata
+     • Lyrics       — track.lyrics.get   → plain lyrics by commontrack_id
+     • Lyrics-Sync  — track.subtitle.get → time-aligned lyrics (commercial
+                      plan; degrades silently to plain lyrics otherwise)
 ───────────────────────────────────────────────────────── */
 
+const MUSIXMATCH_BASE = "https://api.musixmatch.com/ws/1.1";
+
+/** Build a Musixmatch request URL with the api key + format appended. */
+function musixmatchUrl(method, params = {}) {
+  const usp = new URLSearchParams({
+    format: "json",
+    ...params,
+    apikey: process.env.MUSIXMATCH_API_KEY || ""
+  });
+  return `${MUSIXMATCH_BASE}/${method}?${usp.toString()}`;
+}
+
+/** Pull the Musixmatch status_code out of an envelope (or null). */
+function musixmatchStatus(data) {
+  return data && data.message && data.message.header
+    ? data.message.header.status_code
+    : null;
+}
+
+/** Strip the free-tier disclaimer / "(30%)" markers from a lyrics body. */
+function cleanMusixmatchLyrics(raw) {
+  return String(raw || "")
+    .replace(/\*{3,}[\s\S]*?\*{3,}/g, "")  // strip "*** NOT for Commercial use ***"
+    .replace(/^\s*\(\d+%\)\s*$/gm, "")      // strip stray "(30%)" markers
+    .trim();
+}
+
 /**
- * Fetch lyrics for a title+artist directly from Musixmatch.
- * Returns { text, source, copyright } or null when unavailable/unconfigured.
- * The free tier returns a 30% preview plus a non-commercial disclaimer,
- * which is stripped for display while the copyright notice is preserved.
+ * CATALOG — resolve a text query to the canonical Musixmatch track.
+ * Returns { commontrackId, trackId, album, releaseDate, explicit,
+ * hasLyrics, hasSubtitles } or null.
  */
-async function fetchMusixmatchLyrics(artist, title) {
-  if (!process.env.MUSIXMATCH_API_KEY) return null;
+async function musixmatchMatchTrack(artist, title) {
+  const data   = await requestJson(
+    musixmatchUrl("matcher.track.get", { q_track: title, q_artist: artist })
+  );
+  if (musixmatchStatus(data) !== 200) return null;
 
-  const url =
-    `https://api.musixmatch.com/ws/1.1/matcher.lyrics.get?format=json` +
-    `&q_track=${encodeURIComponent(title)}` +
-    `&q_artist=${encodeURIComponent(artist)}` +
-    `&apikey=${encodeURIComponent(process.env.MUSIXMATCH_API_KEY)}`;
+  const t = data.message.body && data.message.body.track;
+  if (!t || !t.commontrack_id) return null;
 
-  const data   = await requestJson(url);
-  const status = data && data.message && data.message.header && data.message.header.status_code;
-  if (status !== 200) return null;
+  return {
+    commontrackId: t.commontrack_id,
+    trackId:       t.track_id || null,
+    album:         t.album_name || null,
+    releaseDate:   t.first_release_date || null,
+    explicit:      t.explicit === 1,
+    hasLyrics:     t.has_lyrics === 1,
+    hasSubtitles:  t.has_subtitles === 1
+  };
+}
+
+/** LYRICS — plain lyrics by commontrack_id. Returns { text, copyright } or null. */
+async function musixmatchLyricsById(commontrackId) {
+  const data = await requestJson(
+    musixmatchUrl("track.lyrics.get", { commontrack_id: String(commontrackId) })
+  );
+  if (musixmatchStatus(data) !== 200) return null;
 
   const lyr = data.message.body && data.message.body.lyrics;
   if (!lyr || !lyr.lyrics_body) return null;
 
-  const body = String(lyr.lyrics_body)
-    .replace(/\*{3,}[\s\S]*?\*{3,}/g, "")  // strip "*** NOT for Commercial use ***"
-    .replace(/^\s*\(\d+%\)\s*$/gm, "")      // strip stray "(30%)" markers
-    .trim();
+  const text = cleanMusixmatchLyrics(lyr.lyrics_body);
+  if (text.length < 20) return null;
+  return { text, copyright: lyr.lyrics_copyright || null };
+}
 
-  if (body.length < 20) return null;
-  return { text: body, source: "Musixmatch", copyright: lyr.lyrics_copyright || null };
+/**
+ * LYRICS-SYNC — time-aligned subtitle by commontrack_id.
+ * Requires a Musixmatch plan that includes synced lyrics; any non-200
+ * (e.g. 401/402/403 on the free tier) returns null so callers fall back
+ * to plain lyrics. Returns [{ time, text }] sorted by time, or null.
+ */
+async function musixmatchSubtitle(commontrackId) {
+  const data = await requestJson(
+    musixmatchUrl("track.subtitle.get", { commontrack_id: String(commontrackId) })
+  );
+  if (musixmatchStatus(data) !== 200) return null;
+
+  const sub = data.message.body && data.message.body.subtitle;
+  if (!sub || !sub.subtitle_body) return null;
+
+  let rows;
+  try { rows = JSON.parse(sub.subtitle_body); } catch (_) { return null; }
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+
+  const lines = rows
+    .map(r => ({
+      time: r && r.time && typeof r.time.total === "number" ? r.time.total : null,
+      text: cleanMusixmatchLyrics(r && r.text)
+    }))
+    .filter(r => r.time !== null && r.text)
+    .sort((a, b) => a.time - b.time);
+
+  return lines.length ? lines : null;
+}
+
+/**
+ * Fetch lyrics for a title+artist from Musixmatch using the Catalog,
+ * Lyrics, and Lyrics-Sync surfaces.
+ *
+ * Flow: matcher.track.get (catalog) → track.lyrics.get (plain by id) →
+ * track.subtitle.get (synced, optional). Falls back to the legacy
+ * matcher.lyrics.get when the catalog lookup can't be resolved.
+ *
+ * Returns { text, source, copyright, synced, meta } or null.
+ */
+async function fetchMusixmatchLyrics(artist, title) {
+  if (!process.env.MUSIXMATCH_API_KEY) return null;
+
+  let text = null, copyright = null, synced = null, meta = null;
+
+  // ── 1. CATALOG — resolve canonical track + metadata ──
+  let match = null;
+  try { match = await musixmatchMatchTrack(artist, title); } catch (_) { /* ignore */ }
+
+  if (match) {
+    meta = {
+      album:        match.album,
+      releaseDate:  match.releaseDate,
+      explicit:     match.explicit,
+      hasSubtitles: match.hasSubtitles
+    };
+
+    // ── 2. LYRICS — plain lyrics by canonical id ──
+    if (match.hasLyrics) {
+      try {
+        const byId = await musixmatchLyricsById(match.commontrackId);
+        if (byId) { text = byId.text; copyright = byId.copyright; }
+      } catch (_) { /* ignore */ }
+    }
+
+    // ── 3. LYRICS-SYNC — time-aligned subtitle (optional) ──
+    if (match.hasSubtitles) {
+      try { synced = await musixmatchSubtitle(match.commontrackId); } catch (_) { /* ignore */ }
+    }
+  }
+
+  // ── Fallback: legacy matcher.lyrics.get when catalog lookup failed ──
+  if (!text) {
+    try {
+      const data = await requestJson(
+        musixmatchUrl("matcher.lyrics.get", { q_track: title, q_artist: artist })
+      );
+      if (musixmatchStatus(data) === 200) {
+        const lyr = data.message.body && data.message.body.lyrics;
+        if (lyr && lyr.lyrics_body) {
+          const body = cleanMusixmatchLyrics(lyr.lyrics_body);
+          if (body.length >= 20) { text = body; copyright = lyr.lyrics_copyright || null; }
+        }
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  // Synced lyrics can stand in for plain text when only sync is available.
+  if (!text && synced) text = synced.map(l => l.text).filter(Boolean).join("\n");
+
+  if (!text) return null;
+
+  return {
+    text,
+    source:    synced ? "Musixmatch (synced)" : "Musixmatch",
+    copyright,
+    synced:    synced || null,
+    meta
+  };
 }
 
 /**
@@ -919,36 +1061,93 @@ async function fetchRawLyrics(artist, title) {
   const encArtist = encodeURIComponent(artist);
   const encTitle  = encodeURIComponent(title);
 
-  // ── Strategy 0: Musixmatch (when configured) ───────
+  let result = null;
+
+  // ── Strategy 0: Musixmatch (Catalog + Lyrics + Lyrics-Sync) ──
   try {
     const mm = await fetchMusixmatchLyrics(artist, title);
-    if (mm) return mm;
+    if (mm) result = mm;
   } catch (_) { /* fall through */ }
 
   // ── Strategy 1: lyrics.ovh ─────────────────────────
-  try {
-    const data = await httpGetJson(
-      `https://api.lyrics.ovh/v1/${encArtist}/${encTitle}`
-    );
-    if (data && typeof data.lyrics === "string" && data.lyrics.trim().length > 30) {
-      return { text: data.lyrics.trim(), source: "lyrics.ovh" };
-    }
-  } catch (_) { /* fall through */ }
+  if (!result) {
+    try {
+      const data = await httpGetJson(
+        `https://api.lyrics.ovh/v1/${encArtist}/${encTitle}`
+      );
+      if (data && typeof data.lyrics === "string" && data.lyrics.trim().length > 30) {
+        result = { text: data.lyrics.trim(), source: "lyrics.ovh" };
+      }
+    } catch (_) { /* fall through */ }
+  }
 
-  // ── Strategy 2: lrclib.net ─────────────────────────
-  try {
-    const data = await httpGetJson(
-      `https://lrclib.net/api/get?artist_name=${encArtist}&track_name=${encTitle}`
-    );
-    const plain = data && (data.plainLyrics || data.syncedLyrics);
-    if (typeof plain === "string" && plain.trim().length > 30) {
-      // Strip lrc timestamps if present
-      const cleaned = plain.replace(/\[\d+:\d+\.\d+\]/g, "").trim();
-      return { text: cleaned, source: "lrclib.net" };
-    }
-  } catch (_) { /* fall through */ }
+  // ── Strategy 2: lrclib.net (also returns free synced lyrics) ──
+  if (!result) {
+    try {
+      const data = await httpGetJson(
+        `https://lrclib.net/api/get?artist_name=${encArtist}&track_name=${encTitle}`
+      );
+      const synced = data && typeof data.syncedLyrics === "string"
+        ? parseLrc(data.syncedLyrics)
+        : null;
+      const plain = data && (data.plainLyrics || data.syncedLyrics);
+      if (typeof plain === "string" && plain.trim().length > 30) {
+        const cleaned = plain.replace(/\[\d+:\d+\.\d+\]/g, "").trim();
+        result = {
+          text:   cleaned,
+          source: synced && synced.length ? "lrclib.net (synced)" : "lrclib.net",
+          synced: synced && synced.length ? synced : null
+        };
+      }
+    } catch (_) { /* fall through */ }
+  }
 
-  return { text: null, source: "unavailable" };
+  if (!result) return { text: null, source: "unavailable" };
+
+  // ── Lyrics-Sync supplement ─────────────────────────
+  // Musixmatch synced subtitles need a commercial plan; when the chosen
+  // source has plain text but no time-alignment, borrow lrclib's free
+  // synced lyrics so the karaoke view still works.
+  if (!result.synced) {
+    try {
+      const syn = await fetchLrclibSynced(artist, title);
+      if (syn && syn.length) {
+        result.synced = syn;
+        if (!/synced/i.test(result.source)) result.source = `${result.source} + lrclib sync`;
+      }
+    } catch (_) { /* ignore — plain lyrics still returned */ }
+  }
+
+  return result;
+}
+
+/**
+ * Fetch only the time-aligned (LRC) lyrics for a track from lrclib.net.
+ * Returns [{ time, text }] sorted by time, or null.
+ */
+async function fetchLrclibSynced(artist, title) {
+  const data = await httpGetJson(
+    `https://lrclib.net/api/get?artist_name=${encodeURIComponent(artist)}&track_name=${encodeURIComponent(title)}`
+  );
+  if (!data || typeof data.syncedLyrics !== "string") return null;
+  const lines = parseLrc(data.syncedLyrics);
+  return lines.length ? lines : null;
+}
+
+/**
+ * Parse LRC-format synced lyrics ("[mm:ss.xx] text") into [{ time, text }]
+ * sorted by time. Returns [] when nothing parses.
+ */
+function parseLrc(lrc) {
+  const out = [];
+  for (const line of String(lrc).split("\n")) {
+    const m = /^\s*\[(\d+):(\d+(?:\.\d+)?)\]\s?(.*)$/.exec(line);
+    if (!m) continue;
+    const time = parseInt(m[1], 10) * 60 + parseFloat(m[2]);
+    const text = m[3].trim();
+    if (text) out.push({ time, text });
+  }
+  return out.sort((a, b) => a.time - b.time);
 }
 
 /**
@@ -1091,6 +1290,10 @@ async function fetchLyricsInsights({ artist, tracks }) {
       chorus,
       lyricsSource,
       lyricsCopyright: rawLyrics.copyright || null,
+      // Lyrics-Sync: time-aligned [{ time, text }] when available
+      syncedLyrics:    rawLyrics.synced || null,
+      // Catalog metadata: { album, releaseDate, explicit, hasSubtitles }
+      lyricsMeta:      rawLyrics.meta || null,
       // iTunes preview — the real artist's voice
       preview: preview ? {
         url:        preview.previewUrl,

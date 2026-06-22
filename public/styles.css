@@ -1566,3 +1566,54 @@ input:focus {
 .listen-btn.spotify:hover { background: rgba(29, 185, 84, 0.18); border-color: #1db954; color: #1ed760; }
 .listen-btn.apple:hover   { background: rgba(250, 45, 72, 0.18); border-color: #fa2d48; color: #ff6b81; }
 .listen-btn.youtube:hover { background: rgba(255, 0, 0, 0.16);  border-color: #ff4e45; color: #ff6b6b; }
+
+/* ── Catalog metadata (Musixmatch matcher.track.get) ── */
+.lyric-track-album {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 4px 0 0; font-size: 0.78rem; color: rgba(255,255,255,0.55);
+}
+.lyric-album-name { font-style: italic; }
+.lyric-album-year {
+  padding: 1px 7px; border-radius: 999px;
+  background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7);
+}
+.lyric-explicit-tag {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 3px;
+  background: rgba(255,255,255,0.25); color: #11131a;
+  font-size: 0.62rem; font-weight: 800; letter-spacing: 0;
+}
+
+/* ── Lyrics-Sync (time-aligned karaoke view) ── */
+.synced-lyrics { width: 100%; }
+.synced-head {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
+}
+.synced-play-btn {
+  border: none; border-radius: 999px; padding: 6px 16px;
+  color: #11131a; font-weight: 700; font-size: 0.82rem; cursor: pointer;
+  transition: transform 0.12s ease, filter 0.12s ease;
+}
+.synced-play-btn:hover { transform: translateY(-1px); filter: brightness(1.08); }
+.synced-badge {
+  font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase;
+  color: rgba(255,255,255,0.45);
+}
+.synced-lines {
+  max-height: 320px; overflow-y: auto; padding-right: 6px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.synced-line {
+  display: flex; gap: 12px; align-items: baseline; margin: 0;
+  padding: 4px 8px; border-radius: 8px; line-height: 1.45;
+  color: rgba(255,255,255,0.6); transition: color 0.15s ease, background 0.15s ease;
+}
+.synced-line.active {
+  background: rgba(255,255,255,0.06); font-weight: 600;
+}
+.synced-time {
+  flex: 0 0 auto; min-width: 40px;
+  font-variant-numeric: tabular-nums; font-size: 0.72rem;
+  color: rgba(255,255,255,0.35);
+}
+.synced-text { flex: 1 1 auto; }

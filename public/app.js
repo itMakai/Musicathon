@@ -680,9 +680,83 @@
     );
   }
 
+  /* ─── SyncedLyrics  (Musixmatch / lrclib Lyrics-Sync) ── */
+  // Time-aligned lyrics ([{ time, text }]). The iTunes preview is only a
+  // 30s mid-song clip, so we drive the karaoke highlight from the real
+  // synced timestamps on their own clock rather than the preview audio.
+  function SyncedLyrics({ lines, color }) {
+    const [activeIdx, setActiveIdx] = useState(-1);
+    const [playing,   setPlaying]   = useState(false);
+    const timerRef     = useRef(null);
+    const startRef     = useRef(0);
+    const containerRef = useRef(null);
+
+    const base = lines.length ? lines[0].time : 0;
+    const end  = lines.length ? lines[lines.length - 1].time + 4 : 0;
+
+    function stop() {
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+      setPlaying(false);
+    }
+
+    function toggle() {
+      if (playing) { stop(); return; }
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+      startRef.current = (typeof performance !== "undefined" ? performance.now() : Date.now());
+      setActiveIdx(0);
+      setPlaying(true);
+      timerRef.current = setInterval(() => {
+        const now   = (typeof performance !== "undefined" ? performance.now() : Date.now());
+        const clock = base + (now - startRef.current) / 1000;
+        let idx = -1;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].time <= clock) idx = i; else break;
+        }
+        setActiveIdx(idx);
+        if (clock >= end) { stop(); setActiveIdx(-1); }
+      }, 200);
+    }
+
+    useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
+
+    useEffect(() => {
+      if (activeIdx < 0 || !containerRef.current) return;
+      const el = containerRef.current.querySelector(`[data-li="${activeIdx}"]`);
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }, [activeIdx]);
+
+    function fmt(t) {
+      const m = Math.floor(t / 60), s = Math.floor(t % 60);
+      return `${m}:${String(s).padStart(2, "0")}`;
+    }
+
+    if (!lines || lines.length === 0) return null;
+
+    return h("div", { className: "synced-lyrics" },
+      h("div", { className: "synced-head" },
+        h("button", {
+          type: "button", className: "synced-play-btn",
+          style: { background: color }, onClick: toggle,
+          "aria-label": playing ? "Pause karaoke" : "Play karaoke"
+        }, playing ? "⏸ Karaoke" : "▶ Karaoke"),
+        h("span", { className: "synced-badge" }, "⏱ Time-synced lyrics")
+      ),
+      h("div", { className: "synced-lines", ref: containerRef },
+        lines.map((ln, i) => h("p", {
+          key: i, "data-li": i,
+          className: `synced-line${i === activeIdx ? " active" : ""}`,
+          style: i === activeIdx ? { color } : {}
+        },
+          h("span", { className: "synced-time" }, fmt(ln.time)),
+          h("span", { className: "synced-text" }, ln.text)
+        ))
+      )
+    );
+  }
+
   /* ─── LyricCard  (one per track, full-width) ───────── */
   function LyricCard({ track, index, palette, onDrill, artist, cyaniteLive }) {
-    const [view, setView] = useState(track.chorus ? "chorus" : "none"); // none | chorus | full
+    const [view, setView] = useState(track.chorus ? "chorus" : "none"); // none | chorus | full | synced
     const [vibe,      setVibe]      = useState(null);
     const [vibeState, setVibeState] = useState("idle");   // idle | loading | done | error
     const [vibeErr,   setVibeErr]   = useState("");
@@ -711,6 +785,12 @@
       view === "full"   ? track.fullLyrics :
       view === "chorus" ? track.chorus     : null;
 
+    const hasSynced = Array.isArray(track.syncedLyrics) && track.syncedLyrics.length > 0;
+    const meta      = track.lyricsMeta || null;
+    const releaseYear = meta && meta.releaseDate
+      ? (String(meta.releaseDate).match(/\d{4}/) || [null])[0]
+      : null;
+
     return h("div", { className: "lyric-card", style: { "--card-accent": color } },
 
       // iTunes preview player — REAL artist voice, at the top of each card
@@ -722,7 +802,13 @@
           h("span", { className: "lyric-track-number", style: { background: color } }, `${index + 1}`),
           h("div", null,
             h("h3", { className: "lyric-track-title" }, track.title),
-            h("p",  { className: "lyric-track-theme" },  track.theme)
+            h("p",  { className: "lyric-track-theme" },  track.theme),
+            // Catalog metadata (Musixmatch matcher.track.get)
+            meta && (meta.album || releaseYear || meta.explicit) && h("p", { className: "lyric-track-album" },
+              meta.album && h("span", { className: "lyric-album-name" }, meta.album),
+              releaseYear && h("span", { className: "lyric-album-year" }, releaseYear),
+              meta.explicit && h("span", { className: "lyric-explicit-tag" }, "E")
+            )
           )
         ),
         h("div", { className: "lyric-card-actions" },
@@ -731,6 +817,11 @@
             style: view === "chorus" ? { borderColor: color, color } : {},
             onClick: () => setView(v => v === "chorus" ? "none" : "chorus")
           }, view === "chorus" ? "▲ Chorus" : "▼ Chorus"),
+          hasSynced && h("button", {
+            type: "button", className: `lyric-view-btn${view === "synced" ? " active" : ""}`,
+            style: view === "synced" ? { borderColor: color, color } : {},
+            onClick: () => setView(v => v === "synced" ? "none" : "synced")
+          }, view === "synced" ? "▲ Synced" : "⏱ Synced"),
           hasLyrics && h("button", {
             type: "button", className: `lyric-view-btn${view === "full" ? " active" : ""}`,
             style: view === "full" ? { borderColor: color, color } : {},
@@ -813,6 +904,12 @@
       ),
       vibeState === "error" && h("p", { className: "vibe-error" }, "⚠ " + vibeErr),
 
+      // Synced (time-aligned) lyrics view
+      view === "synced" && hasSynced && h("div", { className: "lyric-body" },
+        h(SyncedLyrics, { lines: track.syncedLyrics, color }),
+        track.lyricsCopyright && h("p", { className: "lyric-copyright" }, track.lyricsCopyright)
+      ),
+
       // Lyrics display
       displayedLyrics && h("div", { className: "lyric-body" },
         h("div", { className: "lyric-body-inner" },
@@ -822,7 +919,7 @@
       ),
 
       // No lyrics notice
-      !hasLyrics && h("p", { className: "lyric-unavailable" }, "Lyrics not yet indexed for this track."),
+      !hasLyrics && !hasSynced && h("p", { className: "lyric-unavailable" }, "Lyrics not yet indexed for this track."),
 
       // Trivia callout
       track.trivia && h("p", { className: "lyric-trivia" },
