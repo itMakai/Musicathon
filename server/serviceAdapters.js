@@ -1046,9 +1046,10 @@ async function fetchMusixmatchLyrics(artist, title) {
 
   return {
     text,
-    source:    synced ? "Musixmatch (synced)" : "Musixmatch",
+    source:      synced ? "Musixmatch (synced)" : "Musixmatch",
     copyright,
-    synced:    synced || null,
+    synced:      synced || null,
+    syncedSource: synced ? "Musixmatch" : null,
     meta
   };
 }
@@ -1096,7 +1097,8 @@ async function fetchRawLyrics(artist, title) {
         result = {
           text:   cleaned,
           source: synced && synced.length ? "lrclib.net (synced)" : "lrclib.net",
-          synced: synced && synced.length ? synced : null
+          synced: synced && synced.length ? synced : null,
+          syncedSource: synced && synced.length ? "lrclib" : null
         };
       }
     } catch (_) { /* fall through */ }
@@ -1113,6 +1115,7 @@ async function fetchRawLyrics(artist, title) {
       const syn = await fetchLrclibSynced(artist, title);
       if (syn && syn.length) {
         result.synced = syn;
+        result.syncedSource = "lrclib";
         if (!/synced/i.test(result.source)) result.source = `${result.source} + lrclib sync`;
       }
     } catch (_) { /* ignore — plain lyrics still returned */ }
@@ -1292,6 +1295,7 @@ async function fetchLyricsInsights({ artist, tracks }) {
       lyricsCopyright: rawLyrics.copyright || null,
       // Lyrics-Sync: time-aligned [{ time, text }] when available
       syncedLyrics:    rawLyrics.synced || null,
+      syncedSource:    rawLyrics.syncedSource || null,
       // Catalog metadata: { album, releaseDate, explicit, hasSubtitles }
       lyricsMeta:      rawLyrics.meta || null,
       // iTunes preview — the real artist's voice

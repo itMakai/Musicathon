@@ -684,7 +684,7 @@
   // Time-aligned lyrics ([{ time, text }]). The iTunes preview is only a
   // 30s mid-song clip, so we drive the karaoke highlight from the real
   // synced timestamps on their own clock rather than the preview audio.
-  function SyncedLyrics({ lines, color }) {
+  function SyncedLyrics({ lines, color, source }) {
     const [activeIdx, setActiveIdx] = useState(-1);
     const [playing,   setPlaying]   = useState(false);
     const timerRef     = useRef(null);
@@ -739,7 +739,7 @@
           style: { background: color }, onClick: toggle,
           "aria-label": playing ? "Pause karaoke" : "Play karaoke"
         }, playing ? "⏸ Karaoke" : "▶ Karaoke"),
-        h("span", { className: "synced-badge" }, "⏱ Time-synced lyrics")
+        h("span", { className: "synced-badge" }, source ? `⏱ Synced via ${source}` : "⏱ Time-synced lyrics")
       ),
       h("div", { className: "synced-lines", ref: containerRef },
         lines.map((ln, i) => h("p", {
@@ -906,7 +906,7 @@
 
       // Synced (time-aligned) lyrics view
       view === "synced" && hasSynced && h("div", { className: "lyric-body" },
-        h(SyncedLyrics, { lines: track.syncedLyrics, color }),
+        h(SyncedLyrics, { lines: track.syncedLyrics, color, source: track.syncedSource }),
         track.lyricsCopyright && h("p", { className: "lyric-copyright" }, track.lyricsCopyright)
       ),
 
